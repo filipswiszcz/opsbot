@@ -119,8 +119,9 @@ void device::tick(void) noexcept {
 
         auto p4_commit_check_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_p4_commits_check).count();
         if (p4_commit_check_elapsed >= 120) {
-            this->_check_p4_commits("//Horizon/...", "PROJECT-HORIZON.changelog");
-            // messenger_status mess_send_status = messenger.send(1556246990831095870, "wake the fuck up samurai");
+            for (u32 i = 0; i < this->depots.counter; i++) {
+                this->_check_p4_commits(i);
+            }
             this->last_p4_commits_check = clock_now;
         }
 
@@ -276,17 +277,34 @@ u64 device::_get_channel_id(const char *name) noexcept {
 }
 
 device_status device::_load_state(void) noexcept {
+    this->depots.counter = 0;
     FILE *file = std::fopen(DEVICE_STATE_FILE, "r");
     if (file == nullptr) {
         if (errno != ENOENT) {
             return device_status::READ_ERROR;
         }
-        this->last_p4_commit_id = 0;
+        // this->last_p4_commit_id = 0;
         return this->_save_state();
     }
-    if (std::fscanf(file, "last_p4_commit_id=%d", &this->last_p4_commit_id) != 1) {
-        this->last_p4_commit_id = 0;
+
+    char line[256];
+    while (fgets(line, sizeof(line), file) != nullptr) {
+        if (this->depots.counter >= PERFORCE_MAX_DEPOTS) {
+            break;
+        }
+
+        char path[128] = {0};
+        char channel[101] = {0};
+        i32 commit_id = 0;
+
+        if (std::sscanf(line, "depot=%127[^,],%100[^,],%d", path, channel, &commit_id) == 3) {
+            std::strncpy(this->depots.paths[this->depots.counter], path, 127);
+            std::strncpy(this->depots.channels[this->depots.counter], channel, 101);
+            this->depots.last_p4_commit_ids[this->depots.counter] = commit_id;
+            this->depots.counter++;
+        }
     }
+
     (void) std::fclose(file);
     return device_status::SUCCESS;
 }
@@ -296,9 +314,15 @@ device_status device::_save_state(void) noexcept {
     if (file == nullptr) {
         return device_status::WRITE_ERROR;
     }
-    if (std::fprintf(file, "last_p4_commit_id=%d", this->last_p4_commit_id) == 0) {
-        return device_status::WRITE_ERROR;
+
+    for (u32 i = 0; i < this->depots.counter; i++) {
+        std::fprintf(file, "depot=%s,%s,%d", 
+            this->depots.paths[i], 
+            this->depots.channels[i], 
+            this->depots.last_p4_commit_ids[i]
+        );
     }
+
     (void) std::fclose(file);
     return device_status::SUCCESS;
 }
@@ -359,10 +383,14 @@ device_status device::_create_p4_ticket(void) noexcept {
     return device_status::SUCCESS;
 }
 
-device_status device::_check_p4_commits(const char *depot_name, const char *channel_name) noexcept {
-    if (depot_name == nullptr || channel_name == nullptr) {
+device_status device::_check_p4_commits(const u32 depot_id) noexcept {
+    if (depot_id >= this->depots.counter) {
         return device_status::READ_ERROR;
     }
+
+    const char *depot_name = this->depots.paths[depot_id];
+    const char *channel_name = this->depots.channels[depot_id];
+    const i32 commit_id = this->depots.last_p4_commit_ids[depot_id];
 
     char cmd_p4_changes[256]; // find the best size
     std::snprintf(cmd_p4_changes, sizeof(cmd_p4_changes), "p4 changes -m 1 -s submitted %s", depot_name);
@@ -397,7 +425,7 @@ device_status device::_check_p4_commits(const char *depot_name, const char *chan
         return device_status::READ_ERROR;
     }
 
-    if (curr_commit_id <= this->last_p4_commit_id) {
+    if (curr_commit_id <= commit_id) {
 #ifdef _WIN32
         _pclose(cmd_p4_changes_pipe);
 #else
@@ -459,14 +487,14 @@ device_status device::_check_p4_commits(const char *depot_name, const char *chan
     char message[1536];
     std::snprintf(message, sizeof(message), "CHANGELOG #%d\\n%s", curr_commit_id, content);
 
-    if (this->last_p4_commit_id != 0) {
+    if (commit_id != 0) {
         u64 channel_id = this->_get_channel_id(channel_name);
         if (channel_id != 0) {
             this->messenger.send(channel_id, message);
         }
     }
 
-    this->last_p4_commit_id = curr_commit_id;
+    this->depots.last_p4_commit_ids[depot_id] = curr_commit_id;
     this->_save_state();
 
     return device_status::SUCCESS;

@@ -21,7 +21,7 @@ enum class device_status : u8 {
 
 // use allocator for all allocations (poetic)
 // make device/messenger configurable/restartable (+console)
-// read depots and changelog channels from device.dat
+// read depots and changelog channels from device.dat?
 // change sizes of eg token[128], channel_name[101]
 
 class device {
@@ -41,6 +41,13 @@ private:
         u64 parent_ids[DISCORD_MAX_CHANNELS];
         u32 counter;
     } channels;
+
+    struct {
+        char paths[PERFORCE_MAX_DEPOTS][128];
+        char channels[PERFORCE_MAX_DEPOTS][101];
+        i32 last_p4_commit_ids[PERFORCE_MAX_DEPOTS];
+        u32 counter;
+    } depots;
 
     char token[128];
 
@@ -66,7 +73,7 @@ private:
     [[nodiscard]] device_status _restart_messenger(void) noexcept;
     
     [[nodiscard]] device_status _create_p4_ticket(void) noexcept;
-    [[nodiscard]] device_status _check_p4_commits(const char *depot_name, const char *channel_name) noexcept;
+    [[nodiscard]] device_status _check_p4_commits(const u32 depot_id) noexcept;
 };
 
 #endif // !HOR_DEVICE_H
