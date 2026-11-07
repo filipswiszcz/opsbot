@@ -23,13 +23,6 @@ device_status device::initialize(void) noexcept {
     this->is_gw_online = 0;
     this->is_mess_online = 0;
 
-    /* TEMP CHANGELOG CHANNEL */
-    // std::strncpy(this->channels.names[0], "changelog", sizeof(this->channels.names[0]) - 1);
-    // this->channels.names[0][sizeof(this->channels.names[0]) - 1] = '\0';
-    // this->channels.ids[0] = 1556246990831095870ULL;
-    // this->channels.counter = 1;
-    /* END OF TEMP CHANGELOG CHANNEL */
-
     dispatcher_status disp_init_status = this->dispatcher.initialize();
     if (disp_init_status != dispatcher_status::SUCCESS) {
         std::cout << "HOR_ERR: Dispatcher not initialized." << std::endl;
@@ -53,6 +46,9 @@ device_status device::initialize(void) noexcept {
     } else {
         std::cout << "HOR_WARN: Messenger offline." << std::endl;
     }
+
+    this->console.has_pending_cmd.store(0);
+    this->console.worker = std::thread(&device::_console_tick, this);
 
     device_status dev_load_status = this->_load_state();
     if (dev_load_status != device_status::SUCCESS) {
@@ -139,8 +135,108 @@ void device::tick(void) noexcept {
 
 void device::terminate(void) noexcept {
     this->is_running = 0;
+    if (this->console.worker.joinable()) {
+        this->console.worker.detach();
+    }
     this->gateway.terminate();
     this->dispatcher.terminate();
+}
+
+void device::_console_tick(void) noexcept {
+    char input[256];
+    while (this->is_running) {
+        if (std::fgets(input, sizeof(input), stdin) != nullptr) {
+            size_t input_len = std::strlen(input);
+            if (input_len > 0 && (input[input_len - 1] == '\n' || input[input_len - 1] == '\r')) {
+                input[input_len - 1] = '\0';
+            }
+            std::lock_guard<std::mutex> lock(this->console.lock);
+            std::strncpy(this->console.pending_cmd, input, sizeof(this->console.pending_cmd) - 1);
+            this->console.pending_cmd[sizeof(this->console.pending_cmd) - 1] = '\0';
+            this->console.has_pending_cmd.store(1);
+        }
+    }
+}
+
+void device::_process_console_cmd(void) noexcept {
+    if (this->console.has_pending_cmd.load() != 1) {
+        return;
+    }
+
+    char command[256];
+
+    {
+        std::lock_guard<std::mutex> lock(this->console.lock);
+        std::strncpy(command, this->console.pending_cmd, sizeof(command));
+        this->console.has_pending_cmd.store(0);
+    }
+
+    if (std::strcmp(command, "status") == 0) {
+        std::cout << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << std::endl;
+        std::cout << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << std::endl;
+        std::cout << "Tracking: " << this->depots.counter << " depots" << std::endl;
+    } else if (std::strcmp(command, "channels") == 0) {
+        std::cout << "MAPPED DISCORD CHANNELS:" << std::endl;
+        for (u32 i = 0; i < this->channels.counter; i++) {
+            if (this->channels.parent_ids[i] == 0) {
+                std::cout << "[category] " << this->channels.names[i] << " (id: " << this->channels.ids[i] << ")" << std::endl;
+            } else {
+                std::cout << " * " << this->channels.names[i] << " (id: " << this->channels.ids[i] << ")" << std::endl;
+            }
+        }
+    }
+}
+
+device_status device::_load_state(void) noexcept {
+    this->depots.counter = 0;
+    FILE *file = std::fopen(DEVICE_STATE_FILE, "r");
+    if (file == nullptr) {
+        if (errno != ENOENT) {
+            return device_status::READ_ERROR;
+        }
+        // this->last_p4_commit_id = 0;
+        return this->_save_state();
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), file) != nullptr) {
+        if (this->depots.counter >= PERFORCE_MAX_DEPOTS) {
+            break;
+        }
+
+        char path[128] = {0};
+        char channel[101] = {0};
+        i32 commit_id = 0;
+
+        if (std::sscanf(line, "depot=%127[^,],%100[^,],%d", path, channel, &commit_id) == 3) {
+            std::strncpy(this->depots.paths[this->depots.counter], path, 127);
+            std::strncpy(this->depots.channels[this->depots.counter], channel, 101);
+            this->depots.commit_ids[this->depots.counter] = commit_id;
+            this->depots.is_active[this->depots.counter] = 1;
+            this->depots.counter++;
+        }
+    }
+
+    (void) std::fclose(file);
+    return device_status::SUCCESS;
+}
+
+device_status device::_save_state(void) noexcept {
+    FILE *file = std::fopen(DEVICE_STATE_FILE, "w");
+    if (file == nullptr) {
+        return device_status::WRITE_ERROR;
+    }
+
+    for (u32 i = 0; i < this->depots.counter; i++) {
+        std::fprintf(file, "depot=%s,%s,%d", 
+            this->depots.paths[i], 
+            this->depots.channels[i], 
+            this->depots.commit_ids[i]
+        );
+    }
+
+    (void) std::fclose(file);
+    return device_status::SUCCESS;
 }
 
 device_status device::_load_channels(void) noexcept {
@@ -280,58 +376,6 @@ u64 device::_get_channel_id(const char *name) noexcept {
     }
 
     return 0;
-}
-
-device_status device::_load_state(void) noexcept {
-    this->depots.counter = 0;
-    FILE *file = std::fopen(DEVICE_STATE_FILE, "r");
-    if (file == nullptr) {
-        if (errno != ENOENT) {
-            return device_status::READ_ERROR;
-        }
-        // this->last_p4_commit_id = 0;
-        return this->_save_state();
-    }
-
-    char line[256];
-    while (fgets(line, sizeof(line), file) != nullptr) {
-        if (this->depots.counter >= PERFORCE_MAX_DEPOTS) {
-            break;
-        }
-
-        char path[128] = {0};
-        char channel[101] = {0};
-        i32 commit_id = 0;
-
-        if (std::sscanf(line, "depot=%127[^,],%100[^,],%d", path, channel, &commit_id) == 3) {
-            std::strncpy(this->depots.paths[this->depots.counter], path, 127);
-            std::strncpy(this->depots.channels[this->depots.counter], channel, 101);
-            this->depots.commit_ids[this->depots.counter] = commit_id;
-            this->depots.is_active[this->depots.counter] = 1;
-            this->depots.counter++;
-        }
-    }
-
-    (void) std::fclose(file);
-    return device_status::SUCCESS;
-}
-
-device_status device::_save_state(void) noexcept {
-    FILE *file = std::fopen(DEVICE_STATE_FILE, "w");
-    if (file == nullptr) {
-        return device_status::WRITE_ERROR;
-    }
-
-    for (u32 i = 0; i < this->depots.counter; i++) {
-        std::fprintf(file, "depot=%s,%s,%d", 
-            this->depots.paths[i], 
-            this->depots.channels[i], 
-            this->depots.commit_ids[i]
-        );
-    }
-
-    (void) std::fclose(file);
-    return device_status::SUCCESS;
 }
 
 device_status device::_restore_gateway_conn(void) noexcept {

@@ -21,7 +21,6 @@ enum class device_status : u8 {
 
 // use allocator for all allocations (poetic)
 // make device/messenger configurable/restartable (+console)
-// read depots and changelog channels from device.dat?
 // change sizes of eg token[128], channel_name[101]
 
 class device {
@@ -34,6 +33,13 @@ private:
     gateway gateway;
     messenger messenger;
     requester requester;
+
+    struct {
+        std::thread worker;
+        std::mutex lock;
+        char pending_cmd[64];
+        std::atomic<u8> has_pending_cmd;
+    } console;
 
     struct {
         char names[DISCORD_MAX_CHANNELS][101];
@@ -64,8 +70,8 @@ private:
     std::chrono::steady_clock::time_point last_p4_commits_check;
     i32 last_p4_commit_id;
 
-    [[nodiscard]] device_status _load_channels(void) noexcept;
-    [[nodiscard]] u64 _get_channel_id(const char *name) noexcept;
+    void _console_tick(void) noexcept;
+    void _process_console_cmd(void) noexcept;
 
     [[nodiscard]] device_status _load_state(void) noexcept;
     [[nodiscard]] device_status _save_state(void) noexcept;
@@ -73,6 +79,9 @@ private:
     [[nodiscard]] device_status _restore_gateway_conn(void) noexcept;
     [[nodiscard]] device_status _restart_messenger(void) noexcept;
     
+    [[nodiscard]] device_status _load_channels(void) noexcept;
+    [[nodiscard]] u64 _get_channel_id(const char *name) noexcept;
+
     [[nodiscard]] device_status _create_p4_ticket(void) noexcept;
     [[nodiscard]] device_status _check_p4_commits(const u32 depot_id) noexcept;
 };
