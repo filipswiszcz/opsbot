@@ -128,6 +128,7 @@ void device::tick(void) noexcept {
         }
 
         // handle responses from the server (eg /status)
+        this->_process_console_cmd();
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
@@ -145,6 +146,7 @@ void device::terminate(void) noexcept {
 void device::_console_tick(void) noexcept {
     char input[256];
     while (this->is_running) {
+        std::cout << "device >> " << std::flush;
         if (std::fgets(input, sizeof(input), stdin) != nullptr) {
             size_t input_len = std::strlen(input);
             if (input_len > 0 && (input[input_len - 1] == '\n' || input[input_len - 1] == '\r')) {
