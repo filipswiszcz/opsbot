@@ -182,8 +182,11 @@ void device::_process_console_cmd(void) noexcept {
         for (u32 i = 0; i < this->channels.counter; i++) {
             if (this->channels.parent_ids[i] == 0) {
                 std::cout << "[category] " << this->channels.names[i] << " (id: " << this->channels.ids[i] << ")" << std::endl;
-            } else {
-                std::cout << " * " << this->channels.names[i] << " (id: " << this->channels.ids[i] << ")" << std::endl;
+                for (u32 j = 0; i < this->channels.counter; j++) {
+                    if (this->channels.ids[i] == this->channels.parent_ids[j]) {
+                        std::cout << " * " << this->channels.names[j] << " (id: " << this->channels.ids[j] << ")" << std::endl;
+                    }
+                }
             }
         }
     }
