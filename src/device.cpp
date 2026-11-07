@@ -47,9 +47,6 @@ device_status device::initialize(void) noexcept {
         std::cout << "HOR_WARN: Messenger offline." << std::endl;
     }
 
-    this->console.has_pending_cmd.store(0);
-    this->console.worker = std::thread(&device::_console_tick, this);
-
     device_status dev_load_status = this->_load_state();
     if (dev_load_status != device_status::SUCCESS) {
         this->last_p4_commit_id = 0;
@@ -70,6 +67,9 @@ device_status device::initialize(void) noexcept {
 
     this->last_p4_login = std::chrono::steady_clock::now();
     this->last_p4_commits_check = std::chrono::steady_clock::now();
+
+    this->console.has_pending_cmd.store(0);
+    this->console.worker = std::thread(&device::_console_tick, this);
 
     return device_status::SUCCESS;
 }
@@ -290,7 +290,7 @@ device_status device::_load_channels(void) noexcept {
             std::sscanf(type_pos, "\"type\":%d", &type);
         }
 
-        if (type != 0 && type != 4) {
+        if (type != 0 && type != 4 && type != 5 && type != 15) {
             response_pos = object_end;
             continue;
         }
