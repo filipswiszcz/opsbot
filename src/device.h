@@ -45,7 +45,8 @@ private:
     struct {
         char paths[PERFORCE_MAX_DEPOTS][128];
         char channels[PERFORCE_MAX_DEPOTS][101];
-        i32 last_p4_commit_ids[PERFORCE_MAX_DEPOTS];
+        i32 commit_ids[PERFORCE_MAX_DEPOTS];
+        u8 is_active[PERFORCE_MAX_DEPOTS];
         u32 counter;
     } depots;
 

@@ -110,8 +110,8 @@ void device::tick(void) noexcept {
 
         auto p4_login_elapsed = std::chrono::duration_cast<std::chrono::hours>(clock_now - this->last_p4_login).count();
         if (p4_login_elapsed >= 11) {
-            device_status dev_p4_login = this->_create_p4_ticket();
-            if (dev_p4_login != device_status::SUCCESS) {
+            device_status dev_p4_login_status = this->_create_p4_ticket();
+            if (dev_p4_login_status != device_status::SUCCESS) {
                 std::cout << "HOR_WARN: P4 auth failed." << std::endl;
             }
             this->last_p4_login = clock_now;
@@ -120,7 +120,13 @@ void device::tick(void) noexcept {
         auto p4_commit_check_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_p4_commits_check).count();
         if (p4_commit_check_elapsed >= 120) {
             for (u32 i = 0; i < this->depots.counter; i++) {
-                this->_check_p4_commits(i);
+                if (this->depots.is_active[i]) {
+                    device_status dev_p4_check_status = this->_check_p4_commits(i);
+                    if (dev_p4_check_status != device_status::SUCCESS) {
+                        this->depots.is_active[i] = 0;
+                        std::cout << "HOR_WARN: Depot " << this->depots.paths[i] << " is unreachable or invalid. Disabling.." << std::endl;
+                    }
+                }
             }
             this->last_p4_commits_check = clock_now;
         }
@@ -300,7 +306,8 @@ device_status device::_load_state(void) noexcept {
         if (std::sscanf(line, "depot=%127[^,],%100[^,],%d", path, channel, &commit_id) == 3) {
             std::strncpy(this->depots.paths[this->depots.counter], path, 127);
             std::strncpy(this->depots.channels[this->depots.counter], channel, 101);
-            this->depots.last_p4_commit_ids[this->depots.counter] = commit_id;
+            this->depots.commit_ids[this->depots.counter] = commit_id;
+            this->depots.is_active[this->depots.counter] = 1;
             this->depots.counter++;
         }
     }
@@ -319,7 +326,7 @@ device_status device::_save_state(void) noexcept {
         std::fprintf(file, "depot=%s,%s,%d", 
             this->depots.paths[i], 
             this->depots.channels[i], 
-            this->depots.last_p4_commit_ids[i]
+            this->depots.commit_ids[i]
         );
     }
 
@@ -390,7 +397,7 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
 
     const char *depot_name = this->depots.paths[depot_id];
     const char *channel_name = this->depots.channels[depot_id];
-    const i32 commit_id = this->depots.last_p4_commit_ids[depot_id];
+    const i32 commit_id = this->depots.commit_ids[depot_id];
 
     char cmd_p4_changes[256]; // find the best size
     std::snprintf(cmd_p4_changes, sizeof(cmd_p4_changes), "p4 changes -m 1 -s submitted %s", depot_name);
@@ -494,7 +501,7 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
         }
     }
 
-    this->depots.last_p4_commit_ids[depot_id] = curr_commit_id;
+    this->depots.commit_ids[depot_id] = curr_commit_id;
     this->_save_state();
 
     return device_status::SUCCESS;
