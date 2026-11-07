@@ -173,6 +173,8 @@ void device::_process_console_cmd(void) noexcept {
         this->console.has_pending_cmd.store(0);
     }
 
+    std::cout << std::endl;
+
     if (std::strcmp(command, "status") == 0) {
         std::cout << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << std::endl;
         std::cout << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << std::endl;
@@ -182,7 +184,7 @@ void device::_process_console_cmd(void) noexcept {
         for (u32 i = 0; i < this->channels.counter; i++) {
             if (this->channels.parent_ids[i] == 0) {
                 std::cout << "[category] " << this->channels.names[i] << " (id: " << this->channels.ids[i] << ")" << std::endl;
-                for (u32 j = 0; i < this->channels.counter; j++) {
+                for (u32 j = 0; j < this->channels.counter; j++) {
                     if (this->channels.ids[i] == this->channels.parent_ids[j]) {
                         std::cout << " * " << this->channels.names[j] << " (id: " << this->channels.ids[j] << ")" << std::endl;
                     }
