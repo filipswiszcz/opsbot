@@ -50,4 +50,33 @@ private:
     std::atomic<u8> used[capacity];
 };
 
+template<typename T, u32 capacity>
+class lf_queue {
+public:
+    [[nodiscard]] u8 push(const T &element) noexcept {
+        u32 crhead = this->head.load(std::memory_order_relaxed);
+        u32 nxhead = (crhead + 1) % capacity;
+        if (nxhead == this->tail.load(std::memory_order_acquire)) {
+            return 0;
+        }
+        this->elements[crhead] = element;
+        this->head.store(nxhead, std::memory_order_release);
+        return 1;
+    }
+
+    [[nodiscard]] u8 pop(T &element) noexcept {
+        u32 crtail = this->tail.load(std::memory_order_relaxed);
+        if (crtail == this->head.load(std::memory_order_acquire)) {
+            return 0;
+        }
+        element = this->elements[crtail];
+        this->tail.store((crtail + 1) % capacity, std::memory_order_release);
+        return 1;
+    }
+private:
+    T elements[capacity];
+    std::atomic<u32> head{0};
+    std::atomic<u32> tail{0};
+}
+
 #endif // !HOR_MEMORY_H
