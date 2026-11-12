@@ -15,17 +15,17 @@ struct allocator_result {
     T *ptr;
 };
 
-template<typename T, u32 capacity>
+template<typename T, u32 CAPACITY>
 class lf_pool_allocator {
 public:
     lf_pool_allocator() noexcept {
-        for (u32 i = 0; i < capacity; i++) {
+        for (u32 i = 0; i < CAPACITY; i++) {
             this->used[i].store(0);
         }
     }
 
     [[nodiscard]] allocator_result<T> allocate(void) noexcept {
-        for (u32 i = 0; i < capacity; i++) {
+        for (u32 i = 0; i < CAPACITY; i++) {
             u8 expected = 0;
             if (this->used[i].compare_exchange_strong(expected, 1)) {
                 return {allocator_status::SUCCESS, &this->pool[i]};
@@ -39,44 +39,66 @@ public:
             return allocator_status::INVALID_ARGUMENT;
         }
         u32 index = static_cast<u32>(ptr - this->pool);
-        if (index < capacity) {
+        if (index < CAPACITY) {
             this->used[index].store(0);
             return allocator_status::SUCCESS;
         }
         return allocator_status::INVALID_ARGUMENT;
     }
 private:
-    T pool[capacity];
-    std::atomic<u8> used[capacity];
+    T pool[CAPACITY];
+    std::atomic<u8> used[CAPACITY];
 };
 
-template<typename T, u32 capacity>
-class lf_queue {
+enum class queue_status : u8 {
+    SUCCESS = 0,
+    FULL,
+    EMPTY
+};
+
+template<typename T, u32 CAPACITY>
+class lf_spsc_queue final {
+    static_assert(CAPACITY >= 2U, "Queue capacity must be at least 2.");
+    static_assert(CAPACITY <= std::numeric_limits<u32>::max(), "Queue capacity exceeds index range.");
+    static_assert((CAPACITY & (CAPACITY - 1U)) == 0U, "Queue capacity must be a power of two.");
+    static_assert(std::is_default_constructible_v<T>, "T must be default constructible.");
+    static_assert(std::is_nothrow_copy_assignable_v<T>, "T must be nothrow copy assignable.");
+    static_assert(std::is_nothrow_destructible_v<T>, "T must be nothrow destructibe.");
 public:
-    [[nodiscard]] u8 push(const T &element) noexcept {
-        u32 crhead = this->head.load(std::memory_order_relaxed);
-        u32 nxhead = (crhead + 1) % capacity;
-        if (nxhead == this->tail.load(std::memory_order_acquire)) {
-            return 0;
+    lf_spsc_queue() noexcept = default;
+    lf_spsc_queue(const lf_spsc_queue&) = delete;
+    lf_spsc_queue &operator=(const lf_spsc_queue&) = delete;
+    lf_spsc_queue(lf_queue&&) = delete;
+    lf_spsc_queue &operator=(lf_spsc_queue&&) = delete;
+
+    [[nodiscard]] queue_status push(const T &item) noexcept {
+        const u32 curr_head = this->head.load(std::memory_order_relaxed);
+        const u32 next_head = (curr_head + 1U) & (CAPACITY - 1U);
+        if (next_head == this->tail.load(std::memory_order_acquire)) {
+            return queue_status::FULL;
         }
-        this->elements[crhead] = element;
-        this->head.store(nxhead, std::memory_order_release);
-        return 1;
+
+        this->items[curr_head] = item;
+        this->head.store(next_head, std::memory_order_release);
+        
+        return queue_status::SUCCESS;
     }
 
-    [[nodiscard]] u8 pop(T &element) noexcept {
-        u32 crtail = this->tail.load(std::memory_order_relaxed);
-        if (crtail == this->head.load(std::memory_order_acquire)) {
-            return 0;
+    [[nodiscard]] queue_status pop(T &item) noexcept {
+        const u32 curr_tail = this->tail.load(std::memory_order_relaxed);
+        if (curr_tail == this->head.load(std::memory_order_acquire)) {
+            return queue_status::EMPTY;
         }
-        element = this->elements[crtail];
-        this->tail.store((crtail + 1) % capacity, std::memory_order_release);
-        return 1;
+
+        item = this->items[curr_tail];
+        this->tail.store((curr_tail + 1U) & (CAPACITY - 1U), std::memory_order_release);
+
+        return queue_status::SUCCESS;
     }
 private:
-    T elements[capacity];
-    std::atomic<u32> head{0};
-    std::atomic<u32> tail{0};
+    T items[CAPACITY];
+    std::atomic<u32> head{0U};
+    std::atomic<u32> tail{0U};
 }
 
 #endif // !HOR_MEMORY_H
