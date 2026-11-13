@@ -68,8 +68,8 @@ device_status device::initialize(void) noexcept {
     this->last_p4_login = std::chrono::steady_clock::now();
     this->last_p4_commits_check = std::chrono::steady_clock::now();
 
-    this->console.has_pending_cmd.store(0);
-    this->console.worker = std::thread(&device::_console_tick, this);
+    // this->console.has_pending_cmd.store(0);
+    // this->console.worker = std::thread(&device::_console_tick, this);
 
     return device_status::SUCCESS;
 }
@@ -128,7 +128,7 @@ void device::tick(void) noexcept {
         }
 
         // handle responses from the server (eg /status)
-        this->_process_console_cmd();
+        // this->_process_console_cmd();
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
@@ -143,56 +143,84 @@ void device::terminate(void) noexcept {
     this->dispatcher.terminate();
 }
 
-void device::_console_tick(void) noexcept {
-    char input[256];
-    while (this->is_running) {
-        std::cout << "device >> " << std::flush;
-        if (std::fgets(input, sizeof(input), stdin) != nullptr) {
-            size_t input_len = std::strlen(input);
-            if (input_len > 0 && (input[input_len - 1] == '\n' || input[input_len - 1] == '\r')) {
-                input[input_len - 1] = '\0';
+const device::cmd_handler device::cmd_dispatch_table[static_cast<u8>(command_opcode::MAX_OPCODES)] {
+    nullptr,
+    &device::_exec_print_status,
+    &device::_exec_print_channels
+};
+
+// void _console_print(const char *message) noexcept {
+//     if (message == nullptr) return;
+//     std::lock_guard<std::mutex> lock(this->console.lock);
+//     std::cout << "\r\033[2K" << message << "\ndevice >> " << std::flush;
+// };
+
+void device::_exec_print_status(const command &command) noexcept {}
+void device::_exec_print_channels(const command &command) noexcept {}
+
+void device::_process_console_cmds(void) noexcept {
+    command command;
+    while (this->console.commands.pop(command) != queue_status::EMPTY) {
+        const u8 opcode = static_cast<u8>(command.opcode);
+        if (opcode > 0 && opcode < static_cast<u8>(command_opcode::MAX_OPCODES)) {
+            if (this->cmd_dispatch_table[opcode] == nullptr) {
+                continue;
             }
-            std::lock_guard<std::mutex> lock(this->console.lock);
-            std::strncpy(this->console.pending_cmd, input, sizeof(this->console.pending_cmd) - 1);
-            this->console.pending_cmd[sizeof(this->console.pending_cmd) - 1] = '\0';
-            this->console.has_pending_cmd.store(1);
+            (this->*cmd_dispatch_table[opcode])(command);
         }
     }
 }
 
-void device::_process_console_cmd(void) noexcept {
-    if (this->console.has_pending_cmd.load() != 1) {
-        return;
-    }
+// void device::_console_tick(void) noexcept {
+//     char input[256];
+//     while (this->is_running) {
+//         std::cout << "device >> " << std::flush;
+//         if (std::fgets(input, sizeof(input), stdin) != nullptr) {
+//             size_t input_len = std::strlen(input);
+//             if (input_len > 0 && (input[input_len - 1] == '\n' || input[input_len - 1] == '\r')) {
+//                 input[input_len - 1] = '\0';
+//             }
+//             std::lock_guard<std::mutex> lock(this->console.lock);
+//             std::strncpy(this->console.pending_cmd, input, sizeof(this->console.pending_cmd) - 1);
+//             this->console.pending_cmd[sizeof(this->console.pending_cmd) - 1] = '\0';
+//             this->console.has_pending_cmd.store(1);
+//         }
+//     }
+// }
 
-    char command[256];
+// void device::_process_console_cmd(void) noexcept {
+//     if (this->console.has_pending_cmd.load() != 1) {
+//         return;
+//     }
 
-    {
-        std::lock_guard<std::mutex> lock(this->console.lock);
-        std::strncpy(command, this->console.pending_cmd, sizeof(command));
-        this->console.has_pending_cmd.store(0);
-    }
+//     char command[256];
 
-    std::cout << std::endl;
+//     {
+//         std::lock_guard<std::mutex> lock(this->console.lock);
+//         std::strncpy(command, this->console.pending_cmd, sizeof(command));
+//         this->console.has_pending_cmd.store(0);
+//     }
 
-    if (std::strcmp(command, "status") == 0) {
-        std::cout << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << std::endl;
-        std::cout << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << std::endl;
-        std::cout << "Tracking: " << this->depots.counter << " depots" << std::endl;
-    } else if (std::strcmp(command, "channels") == 0) {
-        std::cout << "MAPPED DISCORD CHANNELS:" << std::endl;
-        for (u32 i = 0; i < this->channels.counter; i++) {
-            if (this->channels.parent_ids[i] == 0) {
-                std::cout << "[category] " << this->channels.names[i] << " (id: " << this->channels.ids[i] << ")" << std::endl;
-                for (u32 j = 0; j < this->channels.counter; j++) {
-                    if (this->channels.ids[i] == this->channels.parent_ids[j]) {
-                        std::cout << " * " << this->channels.names[j] << " (id: " << this->channels.ids[j] << ")" << std::endl;
-                    }
-                }
-            }
-        }
-    }
-}
+//     std::cout << std::endl;
+
+//     if (std::strcmp(command, "status") == 0) {
+//         std::cout << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << std::endl;
+//         std::cout << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << std::endl;
+//         std::cout << "Tracking: " << this->depots.counter << " depots" << std::endl;
+//     } else if (std::strcmp(command, "channels") == 0) {
+//         std::cout << "MAPPED DISCORD CHANNELS:" << std::endl;
+//         for (u32 i = 0; i < this->channels.counter; i++) {
+//             if (this->channels.parent_ids[i] == 0) {
+//                 std::cout << "[category] " << this->channels.names[i] << " (id: " << this->channels.ids[i] << ")" << std::endl;
+//                 for (u32 j = 0; j < this->channels.counter; j++) {
+//                     if (this->channels.ids[i] == this->channels.parent_ids[j]) {
+//                         std::cout << " * " << this->channels.names[j] << " (id: " << this->channels.ids[j] << ")" << std::endl;
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// }
 
 device_status device::_load_state(void) noexcept {
     this->depots.counter = 0;
@@ -395,7 +423,7 @@ device_status device::_restore_gateway_conn(void) noexcept {
     }
 
     this->is_gw_online = 1;
-    std::cout << "HOR: Gateway online." << std::endl;
+    std::cout << "HOR: Gateway connected." << std::endl;
 
     return device_status::SUCCESS;
 }

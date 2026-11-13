@@ -81,7 +81,7 @@ public:
     lf_spsc_queue() noexcept = default;
     lf_spsc_queue(const lf_spsc_queue&) = delete;
     lf_spsc_queue &operator=(const lf_spsc_queue&) = delete;
-    lf_spsc_queue(lf_queue&&) = delete;
+    lf_spsc_queue(lf_spsc_queue&&) = delete;
     lf_spsc_queue &operator=(lf_spsc_queue&&) = delete;
 
     [[nodiscard]] queue_status push(const T &item) noexcept {
@@ -112,6 +112,6 @@ private:
     T items[CAPACITY];
     std::atomic<u32> head{0U};
     std::atomic<u32> tail{0U};
-}
+};
 
 #endif // !HOR_MEMORY_H

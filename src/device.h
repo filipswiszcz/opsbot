@@ -5,6 +5,7 @@
 
 #include "dispatcher.h"
 #include "gateway.h"
+#include "memory.h"
 #include "messenger.h"
 #include "requester.h"
 
@@ -17,6 +18,20 @@ enum class device_status : u8 {
     MISSING_TOKEN,
     MISSING_PASS,
     MISSING_GUILD
+};
+
+enum class command_opcode : u8 {
+    NONE = 0,
+    PRINT_STATUS,
+    PRINT_CHANNELS,
+    RELOAD_CONFIG,
+    SHUTDOWN,
+    MAX_OPCODES
+};
+
+struct command {
+    command_opcode opcode;
+    u32 data;
 };
 
 // use allocator for all allocations (poetic)
@@ -36,9 +51,11 @@ private:
 
     struct {
         std::thread worker;
+        // char pending_cmd[64];
+        // std::atomic<u8> has_pending_cmd;
+
+        lf_spsc_queue<command, 16> commands;
         std::mutex lock;
-        char pending_cmd[64];
-        std::atomic<u8> has_pending_cmd;
     } console;
 
     struct {
@@ -70,8 +87,19 @@ private:
     std::chrono::steady_clock::time_point last_p4_commits_check;
     i32 last_p4_commit_id;
 
-    void _console_tick(void) noexcept;
-    void _process_console_cmd(void) noexcept;
+    typedef void (device::*cmd_handler) (const command&) noexcept;
+
+    static const cmd_handler cmd_dispatch_table[static_cast<u8>(command_opcode::MAX_OPCODES)];
+
+    // void _console_print(const char *message) noexcept;
+
+    void _exec_print_status(const command &command) noexcept;
+    void _exec_print_channels(const command &command) noexcept;
+
+    void _process_console_cmds(void) noexcept;
+
+    // void _console_tick(void) noexcept;
+    // void _process_console_cmd(void) noexcept;
 
     [[nodiscard]] device_status _load_state(void) noexcept;
     [[nodiscard]] device_status _save_state(void) noexcept;
