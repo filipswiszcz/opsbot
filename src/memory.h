@@ -16,21 +16,30 @@ struct allocator_result {
 };
 
 template<typename T, u32 CAPACITY>
-class lf_pool_allocator {
+class lf_pool_allocator final {
+    static_assert(CAPACITY >= 0U, "Pool capacity must be greater than zero.");
+    static_assert(std::is_nothrow_default_constructible_v<T>, "T must be nothrow default constructible.");
+    static_assert(std::is_nothrow_destructible_v<T>, "T must be nothrow destructible.");
 public:
     lf_pool_allocator() noexcept {
-        for (u32 i = 0; i < CAPACITY; i++) {
-            this->used[i].store(0);
+        for (u32 i = 0U; i < CAPACITY; i++) {
+            this->used[i].store(0U, std::memory_order_relaxed);
         }
     }
 
+    lf_pool_allocator(const lf_pool_allocator&) = delete;
+    lf_pool_allocator &operator=(const lf_pool_allocator&) = delete;
+    lf_pool_allocator(lf_pool_allocator&&) = delete;
+    lf_pool_allocator &operator=(lf_pool_allocator&&) = delete;
+
     [[nodiscard]] allocator_result<T> allocate(void) noexcept {
-        for (u32 i = 0; i < CAPACITY; i++) {
-            u8 expected = 0;
-            if (this->used[i].compare_exchange_strong(expected, 1)) {
+        for (u32 i = 0U; i < CAPACITY; i++) {
+            u8 expected = 0U;
+            if (this->used[i].compare_exchange_strong(expected, 1U, std::memory_order_acquire, std::memory_order_relaxed)) {
                 return {allocator_status::SUCCESS, &this->pool[i]};
             }
         }
+
         return {allocator_status::OUT_OF_MEMORY, nullptr};
     }
 
@@ -38,11 +47,15 @@ public:
         if (ptr == nullptr) {
             return allocator_status::INVALID_ARGUMENT;
         }
-        u32 index = static_cast<u32>(ptr - this->pool);
-        if (index < CAPACITY) {
-            this->used[index].store(0);
-            return allocator_status::SUCCESS;
+
+        for (u32 i = 0U; i < CAPACITY; i++) {
+            u8 expected = 0U;
+            if (this->used[i].compare_exchange_strong(expected, 0U, std::memory_order_release, std::memory_order_relaxed)) {
+                return allocator_status::SUCCESS;
+            }
+            return allocator_status::INVALID_ARGUMENT;
         }
+
         return allocator_status::INVALID_ARGUMENT;
     }
 private:
