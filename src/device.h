@@ -91,15 +91,14 @@ private:
 
     static const cmd_handler cmd_dispatch_table[static_cast<u8>(command_opcode::MAX_OPCODES)];
 
-    // void _console_print(const char *message) noexcept;
+    void _console_print(const char *message) noexcept;
 
     void _exec_print_status(const command &command) noexcept;
     void _exec_print_channels(const command &command) noexcept;
 
     void _process_console_cmds(void) noexcept;
 
-    // void _console_tick(void) noexcept;
-    // void _process_console_cmd(void) noexcept;
+    void _console_tick(void) noexcept;
 
     [[nodiscard]] device_status _load_state(void) noexcept;
     [[nodiscard]] device_status _save_state(void) noexcept;

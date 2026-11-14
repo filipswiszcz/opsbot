@@ -5,6 +5,13 @@
 #include <iostream>
 #include <thread>
 
+#ifdef _WIN32
+#include <conio.h>
+#else
+#include <poll.h>
+#include <unistd.h>
+#endif
+
 #include "device.h"
 
 constexpr const char *DEVICE_STATE_FILE = "device.dat";
@@ -12,7 +19,8 @@ constexpr const char *DEVICE_STATE_FILE = "device.dat";
 device_status device::initialize(void) noexcept {
     const char *token = std::getenv("TOKEN");
     if (token == nullptr || std::strlen(token) == 0) {
-        std::cout << "HOR_ERR: Missing token." << std::endl;
+        // std::cout << "HOR_ERR: Missing token." << std::endl;
+        this->_console_print("HOR_ERR: Missing token.");
         return device_status::INIT_ERROR;
     }
 
@@ -25,16 +33,19 @@ device_status device::initialize(void) noexcept {
 
     dispatcher_status disp_init_status = this->dispatcher.initialize();
     if (disp_init_status != dispatcher_status::SUCCESS) {
-        std::cout << "HOR_ERR: Dispatcher not initialized." << std::endl;
+        // std::cout << "HOR_ERR: Dispatcher not initialized." << std::endl;
+        this->_console_print("HOR_ERR: Dispatcher not initialized.");
         return device_status::INIT_ERROR;
     }
 
     gateway_status gate_init_status = this->gateway.initialize(token);
     if (gate_init_status == gateway_status::SUCCESS) {
         this->is_gw_online = 1;
-        std::cout << "HOR: Gateway online." << std::endl;
+        // std::cout << "HOR: Gateway online." << std::endl;
+        this->_console_print("HOR: Gateway online.");
     } else {
-        std::cout << "HOR_WARN: Gateway offline." << std::endl;
+        // std::cout << "HOR_WARN: Gateway offline." << std::endl;
+        this->_console_print("HOR_ERR: Gateway offline.");
     }
 
     this->last_gateway_ping = std::chrono::steady_clock::now(); 
@@ -42,34 +53,38 @@ device_status device::initialize(void) noexcept {
     messenger_status mess_init_status = this->messenger.initialize(&this->dispatcher, &this->requester, token);
     if (mess_init_status == messenger_status::SUCCESS) {
         this->is_mess_online = 1;
-        std::cout << "HOR: Messenger online." << std::endl;
+        // std::cout << "HOR: Messenger online." << std::endl;
+        this->_console_print("HOR: Messenger online.");
     } else {
-        std::cout << "HOR_WARN: Messenger offline." << std::endl;
+        // std::cout << "HOR_WARN: Messenger offline." << std::endl;
+        this->_console_print("HOR_WARN: Messenger offline.");
     }
 
     device_status dev_load_status = this->_load_state();
     if (dev_load_status != device_status::SUCCESS) {
         this->last_p4_commit_id = 0;
-        std::cout << "HOR_WARN: Could not access or create state file. Defaulting commit ID to 0." << std::endl;
+        // std::cout << "HOR_WARN: Could not access or create state file. Defaulting commit ID to 0." << std::endl;
+        this->_console_print("HOR_WARN: Could not access or create state file. Defaulting commit ID to 0.");
     }
 
     device_status dev_chan_status = this->_load_channels();
     if (dev_chan_status != device_status::SUCCESS) {
-        std::cout << "HOT_WARN: Channels sync failed." << std::endl;
+        // std::cout << "HOT_WARN: Channels sync failed." << std::endl;
+        this->_console_print("HOT_WARN: Channels sync failed.");
     }
 
     this->last_channels_sync = std::chrono::steady_clock::now();
 
     device_status dev_p4_login = this->_create_p4_ticket();
     if (dev_p4_login != device_status::SUCCESS) {
-        std::cout << "HOT_WARN: P4 auth failed." << std::endl;
+        // std::cout << "HOT_WARN: P4 auth failed." << std::endl;
+        this->_console_print("HOT_WARN: P4 auth failed.");
     }
 
     this->last_p4_login = std::chrono::steady_clock::now();
     this->last_p4_commits_check = std::chrono::steady_clock::now();
 
-    // this->console.has_pending_cmd.store(0);
-    // this->console.worker = std::thread(&device::_console_tick, this);
+    this->console.worker = std::thread(&device::_console_tick, this);
 
     return device_status::SUCCESS;
 }
@@ -84,7 +99,8 @@ void device::tick(void) noexcept {
                 gateway_status gw_ping_status = this->gateway.ping();
                 if (gw_ping_status != gateway_status::SUCCESS) {
                     this->is_gw_online = 0;
-                    std::cout << "HOR_WARN: Gateway connection dropped." << std::endl;
+                    // std::cout << "HOR_WARN: Gateway connection dropped." << std::endl;
+                    this->_console_print("HOR_WARN: Gateway connection dropped.");
                 }
                 this->last_gateway_ping = clock_now;
             }
@@ -99,7 +115,8 @@ void device::tick(void) noexcept {
         if (dc_chan_sync_elapsed >= 6) {
             device_status dc_chan_sync_status = this->_load_channels();
             if (dc_chan_sync_status != device_status::SUCCESS) {
-                std::cout << "HOT_WARN: Channels sync failed." << std::endl;
+                // std::cout << "HOT_WARN: Channels sync failed." << std::endl;
+                this->_console_print("HOT_WARN: Channels sync failed.");
             }
             this->last_channels_sync = clock_now;
         }
@@ -108,7 +125,8 @@ void device::tick(void) noexcept {
         if (p4_login_elapsed >= 11) {
             device_status dev_p4_login_status = this->_create_p4_ticket();
             if (dev_p4_login_status != device_status::SUCCESS) {
-                std::cout << "HOR_WARN: P4 auth failed." << std::endl;
+                // std::cout << "HOR_WARN: P4 auth failed." << std::endl;
+                this->_console_print("HOR_WARN: P4 auth failed.");
             }
             this->last_p4_login = clock_now;
         }
@@ -120,7 +138,10 @@ void device::tick(void) noexcept {
                     device_status dev_p4_check_status = this->_check_p4_commits(i);
                     if (dev_p4_check_status != device_status::SUCCESS) {
                         this->depots.is_active[i] = 0;
-                        std::cout << "HOR_WARN: Depot " << this->depots.paths[i] << " is unreachable or invalid. Disabling.." << std::endl;
+                        // std::cout << "HOR_WARN: Depot " << this->depots.paths[i] << " is unreachable or invalid. Disabling.." << std::endl;
+                        char message[256];
+                        std::snprintf(message, sizeof(message), "HOR_WARN: Depot %s is unreachable or invalid. Disabling..", this->depots.paths[i]);
+                        this->_console_print(message);
                     }
                 }
             }
@@ -128,7 +149,7 @@ void device::tick(void) noexcept {
         }
 
         // handle responses from the server (eg /status)
-        // this->_process_console_cmd();
+        this->_process_console_cmds();
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
@@ -149,14 +170,38 @@ const device::cmd_handler device::cmd_dispatch_table[static_cast<u8>(command_opc
     &device::_exec_print_channels
 };
 
-// void _console_print(const char *message) noexcept {
-//     if (message == nullptr) return;
-//     std::lock_guard<std::mutex> lock(this->console.lock);
-//     std::cout << "\r\033[2K" << message << "\ndevice >> " << std::flush;
-// };
+void device::_console_print(const char *message) noexcept {
+    if (message == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(this->console.lock);
+    std::cout << "\r\033[2K" << message << "\ndevice >> " << std::flush;
+}
 
-void device::_exec_print_status(const command &command) noexcept {}
-void device::_exec_print_channels(const command &command) noexcept {}
+void device::_exec_print_status(const command &command) noexcept {
+    std::lock_guard<std::mutex> lock(this->console.lock);
+    std::cout << "\r\033[2K--- SYS STATUS ---\n" << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << "\n"
+        << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << "\n"
+        << "Depots: " << this->depots.counter << " depots\n" << "\ndevice >> " << std::flush;
+}
+
+void device::_exec_print_channels(const command &command) noexcept {
+    std::lock_guard<std::mutex> lock(this->console.lock);
+    std::cout << "\r\033[2K--- MAPPED DC CHANNELS ---\n";
+    for (u32 i = 0U; i < this->channels.counter; i++) {
+        if (this->channels.parent_ids[i] != 0U) {
+            continue;
+        }
+        std::cout << "[category] " << this->channels.names[i] << "\n";
+        for (u32 j = 0U; j < this->channels.counter; j++) {
+            if (this->channels.parent_ids[j] != this->channels.ids[i]) {
+                continue;
+            }
+            std::cout << "  -> " << this->channels.names[j] << "\n";
+        }
+    }
+    std::cout << "\ndevice >> " << std::flush;
+}
 
 void device::_process_console_cmds(void) noexcept {
     command command;
@@ -171,56 +216,59 @@ void device::_process_console_cmds(void) noexcept {
     }
 }
 
-// void device::_console_tick(void) noexcept {
-//     char input[256];
-//     while (this->is_running) {
-//         std::cout << "device >> " << std::flush;
-//         if (std::fgets(input, sizeof(input), stdin) != nullptr) {
-//             size_t input_len = std::strlen(input);
-//             if (input_len > 0 && (input[input_len - 1] == '\n' || input[input_len - 1] == '\r')) {
-//                 input[input_len - 1] = '\0';
-//             }
-//             std::lock_guard<std::mutex> lock(this->console.lock);
-//             std::strncpy(this->console.pending_cmd, input, sizeof(this->console.pending_cmd) - 1);
-//             this->console.pending_cmd[sizeof(this->console.pending_cmd) - 1] = '\0';
-//             this->console.has_pending_cmd.store(1);
-//         }
-//     }
-// }
+void device::_console_tick(void) noexcept {
+    char input[256];
+    std::cout << "device >> " << std::flush;
+    while (this->is_running) {
+        u8 has_input = 0U;
 
-// void device::_process_console_cmd(void) noexcept {
-//     if (this->console.has_pending_cmd.load() != 1) {
-//         return;
-//     }
+#ifdef _WIN32
+        if (_kbhit()) {
+            has_input = 1U;
+        }
+#else
+        struct pollfd pfd = {STDIN_FILENO, POLLIN, 0};
+        if (poll(&pfd, 1, 100) > 0 && (pfd.revents & POLLIN)) {
+            has_input = 1U;
+        }
+#endif
 
-//     char command[256];
+        if (has_input) {
+            if (std::fgets(input, sizeof(input), stdin) != nullptr) {
+                size_t input_len = std::strlen(input);
+                while (input_len > 0 && (input[input_len - 1] == '\n' || input[input_len - 1] == '\r')) {
+                    input[input_len - 1] = '\0';
+                    input_len--;
+                }
 
-//     {
-//         std::lock_guard<std::mutex> lock(this->console.lock);
-//         std::strncpy(command, this->console.pending_cmd, sizeof(command));
-//         this->console.has_pending_cmd.store(0);
-//     }
+                if (input_len > 0) {
+                    command command;
+                    command.opcode = command_opcode::NONE;
+                    command.data = 0;
 
-//     std::cout << std::endl;
+                    if (std::strcmp(input, "status") == 0) {
+                        command.opcode = command_opcode::PRINT_STATUS;
+                    } else if (std::strcmp(input, "channels") == 0) {
+                        command.opcode = command_opcode::PRINT_CHANNELS;
+                    }
 
-//     if (std::strcmp(command, "status") == 0) {
-//         std::cout << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << std::endl;
-//         std::cout << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << std::endl;
-//         std::cout << "Tracking: " << this->depots.counter << " depots" << std::endl;
-//     } else if (std::strcmp(command, "channels") == 0) {
-//         std::cout << "MAPPED DISCORD CHANNELS:" << std::endl;
-//         for (u32 i = 0; i < this->channels.counter; i++) {
-//             if (this->channels.parent_ids[i] == 0) {
-//                 std::cout << "[category] " << this->channels.names[i] << " (id: " << this->channels.ids[i] << ")" << std::endl;
-//                 for (u32 j = 0; j < this->channels.counter; j++) {
-//                     if (this->channels.ids[i] == this->channels.parent_ids[j]) {
-//                         std::cout << " * " << this->channels.names[j] << " (id: " << this->channels.ids[j] << ")" << std::endl;
-//                     }
-//                 }
-//             }
-//         }
-//     }
-// }
+                    if (command.opcode != command_opcode::NONE) {
+                        this->console.commands.push(command);
+                    } else {
+                        this->_console_print("HOR: Unknown command.");
+                    }
+                } else {
+                    std::lock_guard<std::mutex> lock(this->console.lock);
+                    std::cout << "device >> " << std::flush;
+                }
+            }
+        }
+
+#ifdef _WIN32
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#endif
+    }
+}
 
 device_status device::_load_state(void) noexcept {
     this->depots.counter = 0;
@@ -277,8 +325,10 @@ device_status device::_save_state(void) noexcept {
 device_status device::_load_channels(void) noexcept {
     const char *guild = std::getenv("GUILD");
     if (guild == nullptr || std::strlen(guild) == 0) {
-        std::cout << "HOR_ERR: Missing guild ID." << std::endl;
-        std::cout << "HOR_ERR: Skipping channel sync." << std::endl;
+        // std::cout << "HOR_ERR: Missing guild ID." << std::endl;
+        // std::cout << "HOR_ERR: Skipping channel sync." << std::endl;
+        this->_console_print("HOR_ERR: Missing guild ID.");
+        this->_console_print("Skipping channel sync.");
         return device_status::MISSING_GUILD;
     }
 
@@ -289,7 +339,8 @@ device_status device::_load_channels(void) noexcept {
     char response[65536] = {0};
     requester_status req_get_channels_status = this->requester.get(url, headers, response, sizeof(response));
     if (req_get_channels_status != requester_status::SUCCESS) {
-        std::cout << "HOR_ERR: HTTP request failed to fetch channels." << std::endl;
+        // std::cout << "HOR_ERR: HTTP request failed to fetch channels." << std::endl;
+        this->_console_print("HOR_ERR: HTTP request failed to fetch channels.");
         return device_status::NETWORK_ERROR;
     }
 
@@ -362,7 +413,10 @@ device_status device::_load_channels(void) noexcept {
     }
     
     std::memcpy(&this->channels, &channels_copy, sizeof(this->channels));
-    std::cout << "HOR: " << this->channels.counter << " channels found." << std::endl;
+    // std::cout << "HOR: " << this->channels.counter << " channels found." << std::endl;
+    char message[256];
+    std::snprintf(message, sizeof(message), "HOR: %u channels found.", this->channels.counter);
+    this->_console_print("HOR_ERR: HTTP request failed to fetch channels.");
 
     return device_status::SUCCESS;
 }
@@ -418,12 +472,14 @@ device_status device::_restore_gateway_conn(void) noexcept {
 
     gateway_status gate_init_status = this->gateway.initialize(this->token);
     if (gate_init_status != gateway_status::SUCCESS) {
-        std::cout << "HOR_WARN: Gateway offline." << std::endl;
+        // std::cout << "HOR_WARN: Gateway offline." << std::endl;
+        this->_console_print("HOR_WARN: Gateway offline.");
         return device_status::NETWORK_ERROR;
     }
 
     this->is_gw_online = 1;
-    std::cout << "HOR: Gateway connected." << std::endl;
+    // std::cout << "HOR: Gateway connected." << std::endl;
+    this->_console_print("HOR: Gateway connected.");
 
     return device_status::SUCCESS;
 }
@@ -435,7 +491,8 @@ device_status device::_restart_messenger(void) noexcept {
 device_status device::_create_p4_ticket(void) noexcept {
     const char *pass = std::getenv("PASS");
     if (pass == nullptr || std::strlen(pass) == 0) {
-        std::cout << "HOR_ERR: Missing P4 password." << std::endl;
+        // std::cout << "HOR_ERR: Missing P4 password." << std::endl;
+        this->_console_print("HOR_ERR: Missing P4 password.");
         return device_status::MISSING_PASS;
     }
 
@@ -460,11 +517,13 @@ device_status device::_create_p4_ticket(void) noexcept {
 #endif
 
     if (exit_code != 0) {
-        std::cout << "HOR_WARN: P4 login failed." << std::endl;
+        // std::cout << "HOR_WARN: P4 login failed." << std::endl;
+        this->_console_print("HOR_WARN: P4 login failed.");
         return device_status::READ_ERROR;
     }
 
-    std::cout << "HOR: P4 authorized." << std::endl;
+    // std::cout << "HOR: P4 authorized." << std::endl;
+    this->_console_print("HOR: P4 authorized.");
 
     return device_status::SUCCESS;
 }
