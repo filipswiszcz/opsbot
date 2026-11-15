@@ -365,7 +365,7 @@ device_status device::_load_channels(void) noexcept {
 
         if (std::sscanf(response_pos, "\"id\":\"%llu\"", &id) != 1) {
             response_pos++;
-            break;
+            continue;
         }
 
         const char *object = std::strstr(response_pos + 1, "\"id\":\"");
@@ -375,7 +375,7 @@ device_status device::_load_channels(void) noexcept {
         }
 
         if (type != 0 && type != 4 && type != 5 && type != 15) {
-            response_pos = object_end;
+            response_pos++;
             continue;
         }
 
@@ -394,7 +394,7 @@ device_status device::_load_channels(void) noexcept {
         }
 
         if (name[0] == '\0') {
-            response_pos = object_end;
+            response_pos++;
             continue;
         }
 
@@ -409,14 +409,14 @@ device_status device::_load_channels(void) noexcept {
         channels_copy.parent_ids[channels_copy.counter] = parent_id;
         channels_copy.counter++;
 
-        response_pos = object_end;
+        response_pos++;
     }
     
     std::memcpy(&this->channels, &channels_copy, sizeof(this->channels));
     // std::cout << "HOR: " << this->channels.counter << " channels found." << std::endl;
     char message[256];
     std::snprintf(message, sizeof(message), "HOR: %u channels found.", this->channels.counter);
-    this->_console_print("HOR_ERR: HTTP request failed to fetch channels.");
+    this->_console_print(message);
 
     return device_status::SUCCESS;
 }
@@ -576,7 +576,7 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
 #else
         pclose(cmd_p4_changes_pipe);
 #endif
-        return device_status::READ_ERROR;
+        return device_status::SUCCESS;
     }
 
 #ifdef _WIN32
