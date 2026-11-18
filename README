@@ -4,16 +4,16 @@ opsbot
 Changelog tracking and ticket management for Discord servers.
 
 COMPILATION
--------
+-----------
 
 * Windows: build.bat [dev/release]
 * Linux/MacOS: build.sh [dev/release]
 
 CONFIGURATION
-------------
+-------------
 
 The program requires the following environment variables for full functionality:
 
-TOKEN   - Discord bot token
-GUILD   - Discord guild id
-PASS    - Perforce (P4) password
+TOKEN  - Discord bot token
+GUILD  - Discord guild id
+PASS   - Perforce (P4) password
