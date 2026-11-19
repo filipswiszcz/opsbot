@@ -27,7 +27,7 @@ device_status device::initialize(void) noexcept {
     std::strncpy(this->token, token, sizeof(this->token) - 1);
     this->token[sizeof(this->token) - 1] = '\0';
 
-    this->is_running = 1;
+    this->is_running.store(1U, std::memory_order_relaxed);
     this->is_gw_online = 0;
     this->is_mess_online = 0;
 
@@ -90,7 +90,7 @@ device_status device::initialize(void) noexcept {
 }
 
 void device::tick(void) noexcept {
-    while (this->is_running) {
+    while (this->is_running.load(std::memory_order_acquire) != 0U) {
         auto clock_now = std::chrono::steady_clock::now();
 
         auto gw_ping_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_gateway_ping).count();
@@ -150,15 +150,18 @@ void device::tick(void) noexcept {
 
         // handle responses from the server (eg /status)
         this->_process_console_cmds();
+        if (this->is_running.load(std::memory_order_acquire) == 0U) {
+            break;
+        }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 }
 
 void device::terminate(void) noexcept {
-    this->is_running = 0;
+    this->is_running.store(0U, std::memory_order_release);
     if (this->console.worker.joinable()) {
-        this->console.worker.detach();
+        this->console.worker.join();
     }
     this->gateway.terminate();
     this->dispatcher.terminate();
@@ -167,7 +170,9 @@ void device::terminate(void) noexcept {
 const device::cmd_handler device::cmd_dispatch_table[static_cast<u8>(command_opcode::MAX_OPCODES)] {
     nullptr,
     &device::_exec_print_status,
-    &device::_exec_print_channels
+    &device::_exec_print_channels,
+    nullptr,
+    &device::_exec_exit
 };
 
 void device::_console_print(const char *message) noexcept {
@@ -209,6 +214,13 @@ void device::_exec_print_channels(const command &command) noexcept {
     std::cout << "\ndevice >> " << std::flush;
 }
 
+void device::_exec_exit(const command &command) noexcept {
+    (void) command;
+    std::lock_guard<std::mutex> lock(this->console.lock);
+    std::cout << "\r\033[2KHalting..\n" << std::flush;
+    this->is_running.store(0U, std::memory_order_release);
+}
+
 void device::_process_console_cmds(void) noexcept {
     command command;
     while (this->console.commands.pop(command) != queue_status::EMPTY) {
@@ -225,7 +237,7 @@ void device::_process_console_cmds(void) noexcept {
 void device::_console_tick(void) noexcept {
     char input[256];
     // std::cout << "device >> " << std::flush;
-    while (this->is_running) {
+    while (this->is_running.load(std::memory_order_acquire) != 0U) {
         u8 has_input = 0U;
 
 #ifdef _WIN32
@@ -256,6 +268,8 @@ void device::_console_tick(void) noexcept {
                         command.opcode = command_opcode::PRINT_STATUS;
                     } else if (std::strcmp(input, "channels") == 0) {
                         command.opcode = command_opcode::PRINT_CHANNELS;
+                    } else if (std::strcmp(input, "exit") == 0) {
+                        command.opcode = command_opcode::SHUTDOWN;
                     }
 
                     if (command.opcode != command_opcode::NONE) {

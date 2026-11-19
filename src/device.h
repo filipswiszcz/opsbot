@@ -72,7 +72,7 @@ private:
 
     char token[128];
 
-    u8 is_running;
+    std::atomic<u8> is_running{0U};
 
     u8 is_gw_online;
     u8 is_mess_online;
@@ -92,6 +92,7 @@ private:
 
     void _exec_print_status(const command &command) noexcept;
     void _exec_print_channels(const command &command) noexcept;
+    void _exec_exit(const command &command) noexcept;
 
     void _process_console_cmds(void) noexcept;
 
