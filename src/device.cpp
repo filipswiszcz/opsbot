@@ -501,9 +501,9 @@ device_status device::_create_p4_ticket(void) noexcept {
 
     FILE *pipe;
 #ifdef _WIN32
-    pipe = _popen("p4 login", "w");
+    pipe = _popen("p4 login > NUL 2>&1", "w");
 #else
-    pipe = popen("p4 login", "w");
+    pipe = popen("p4 login > /dev/null 2>&1", "w");
 #endif
 
     if (pipe == nullptr) {
@@ -541,7 +541,7 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
     const i32 commit_id = this->depots.commit_ids[depot_id];
 
     char cmd_p4_changes[256]; // find the best size
-    std::snprintf(cmd_p4_changes, sizeof(cmd_p4_changes), "p4 changes -m 1 -s submitted %s", depot_name);
+    std::snprintf(cmd_p4_changes, sizeof(cmd_p4_changes), "p4 -s changes -m 1 -s submitted %s", depot_name);
 
     FILE *cmd_p4_changes_pipe;
 #ifdef _WIN32
