@@ -310,13 +310,15 @@ device_status device::_load_state(void) noexcept {
         char path[128] = {0};
         char channel[101] = {0};
         i32 commit_id = 0;
+        i32 changelog_id = 0;
 
-        if (std::sscanf(line, "depot=%127[^,],%100[^,],%d", path, channel, &commit_id) == 3) {
+        if (std::sscanf(line, "depot=%127[^,],%100[^,],%d,%d", path, channel, &commit_id, &changelog_id) == 4) {
             std::strncpy(this->depots.paths[this->depots.counter], path, sizeof(this->depots.paths[0]) - 1);
             this->depots.paths[this->depots.counter][sizeof(this->depots.paths[0]) - 1] = '\0';
             std::strncpy(this->depots.channels[this->depots.counter], channel, sizeof(this->depots.channels[0]) - 1);
             this->depots.channels[this->depots.counter][sizeof(this->depots.channels[0]) - 1] = '\0';
             this->depots.commit_ids[this->depots.counter] = commit_id;
+            this->depots.changelog_ids[this->depots.counter] = changelog_id;
             this->depots.is_active[this->depots.counter] = 1;
             this->depots.counter++;
         }
@@ -333,10 +335,11 @@ device_status device::_save_state(void) noexcept {
     }
 
     for (u32 i = 0; i < this->depots.counter; i++) {
-        std::fprintf(file, "depot=%s,%s,%d\n", 
+        std::fprintf(file, "depot=%s,%s,%d,%d\n", 
             this->depots.paths[i], 
             this->depots.channels[i], 
-            this->depots.commit_ids[i]
+            this->depots.commit_ids[i],
+            this->depots.changelog_ids[i]
         );
     }
 
@@ -603,40 +606,11 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
         return device_status::SUCCESS;
     }
 
-//     char cmd_p4_changes_out[128] = {0};
-//     if (std::fgets(cmd_p4_changes_out, sizeof(cmd_p4_changes_out), cmd_p4_changes_pipe) == nullptr) {
-// #ifdef _WIN32
-//         _pclose(cmd_p4_changes_pipe);
-// #else
-//         pclose(cmd_p4_changes_pipe);
-// #endif
-//         return device_status::READ_ERROR;
-//     }
-
-//     i32 curr_commit_id = 0;
-//     if (std::sscanf(cmd_p4_changes_out, "Change %d on", &curr_commit_id) != 1) {
-// #ifdef _WIN32
-//         _pclose(cmd_p4_changes_pipe);
-// #else
-//         pclose(cmd_p4_changes_pipe);
-// #endif
-//         return device_status::READ_ERROR;
-//     }
-
-//     if (curr_commit_id <= commit_id) {
-// #ifdef _WIN32
-//         _pclose(cmd_p4_changes_pipe);
-// #else
-//         pclose(cmd_p4_changes_pipe);
-// #endif
-//         return device_status::SUCCESS;
-//     }
-
-// #ifdef _WIN32
-//         _pclose(cmd_p4_changes_pipe);
-// #else
-//         pclose(cmd_p4_changes_pipe);
-// #endif
+    if (commit_id < 0) {
+        this->depots.commit_ids[depot_id] = curr_commit_id;
+        (void) this->_save_state();
+        return device_status::SUCCESS;
+    }
 
     char cmd_p4_desc[128];
     std::snprintf(cmd_p4_desc, sizeof(cmd_p4_desc), "p4 -Ztag -F \"%%desc%%\" describe -s %d", curr_commit_id);
@@ -682,18 +656,21 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
         pclose(cmd_p4_desc_pipe);
 #endif
 
-    char message[1536];
-    std::snprintf(message, sizeof(message), "CHANGELOG #%d\\n%s", curr_commit_id, content);
+    const i32 next_changelog_id = this->depots.changelog_ids[depot_id] + 1;
 
-    if (commit_id != 0) {
-        u64 channel_id = this->_get_channel_id(channel_name);
-        if (channel_id != 0) {
-            this->messenger.send(channel_id, message);
+    char message[1536];
+    std::snprintf(message, sizeof(message), "CHANGELOG #%d\\n%s", next_changelog_id, content);
+
+    u64 channel_id = this->_get_channel_id(channel_name);
+    if (channel_id != 0) {
+        messenger_status msg_send_status = this->messenger.send(channel_id, message);
+        if (msg_send_status == messenger_status::SUCCESS) {
+            this->depots.changelog_ids[depot_id] = next_changelog_id;
         }
     }
 
     this->depots.commit_ids[depot_id] = curr_commit_id;
-    this->_save_state();
+    (void) this->_save_state();
 
     return device_status::SUCCESS;
 }
