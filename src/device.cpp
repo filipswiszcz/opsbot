@@ -179,16 +179,21 @@ void device::_console_print(const char *message) noexcept {
 }
 
 void device::_exec_print_status(const command &command) noexcept {
+    u32 active_depots = 0;
+    for (u32 i = 0U; i < this->depots.counter; i++) {
+        if (this->depots.is_active[i] != 0U) {
+            active_depots++;
+        }
+    }
     std::lock_guard<std::mutex> lock(this->console.lock);
-    std::cout << "\n\r\033[2KSYSTEM:\n" << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << "\n"
-        << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << "\n"
-        << "Depots: " << this->depots.counter << " depots\n" << "\ndevice >> " << std::flush;
-    // show active/offline depots
+    std::cout << "\n\r\033[2KSYSTEM:\n" << "Gateway: " << (this->is_gw_online ? "online" : "offline") << "\n"
+        << "Messenger: " << (this->is_mess_online ? "online" : "offline") << "\n"
+        << "Depots: " << this->depots.counter << " (" << active_depots << " active)" << "\n\ndevice >> " << std::flush;
 }
 
 void device::_exec_print_channels(const command &command) noexcept {
     std::lock_guard<std::mutex> lock(this->console.lock);
-    std::cout << "\n\r\033[2KMAPPED CHANNELS:\n\n";
+    std::cout << "\n\r\033[2KMAPPED CHANNELS:\n";
     for (u32 i = 0U; i < this->channels.counter; i++) {
         if (this->channels.parent_ids[i] != 0U) {
             continue;
@@ -219,7 +224,7 @@ void device::_process_console_cmds(void) noexcept {
 
 void device::_console_tick(void) noexcept {
     char input[256];
-    std::cout << "device >> " << std::flush;
+    // std::cout << "device >> " << std::flush;
     while (this->is_running) {
         u8 has_input = 0U;
 
