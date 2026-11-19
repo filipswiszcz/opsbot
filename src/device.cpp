@@ -180,7 +180,7 @@ void device::_console_print(const char *message) noexcept {
 
 void device::_exec_print_status(const command &command) noexcept {
     std::lock_guard<std::mutex> lock(this->console.lock);
-    std::cout << "\n\r\033[2K--- SYSTEM STATUS ---\n" << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << "\n"
+    std::cout << "\n\r\033[2KSYSTEM:\n" << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << "\n"
         << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << "\n"
         << "Depots: " << this->depots.counter << " depots\n" << "\ndevice >> " << std::flush;
     // show active/offline depots
@@ -188,17 +188,17 @@ void device::_exec_print_status(const command &command) noexcept {
 
 void device::_exec_print_channels(const command &command) noexcept {
     std::lock_guard<std::mutex> lock(this->console.lock);
-    std::cout << "\n\r\033[2K--- MAPPED CHANNELS ---\n\n";
+    std::cout << "\n\r\033[2KMAPPED CHANNELS:\n\n";
     for (u32 i = 0U; i < this->channels.counter; i++) {
         if (this->channels.parent_ids[i] != 0U) {
             continue;
         }
-        std::cout << "[category] " << this->channels.names[i] << "\n";
+        std::cout << this->channels.names[i] << "\n";
         for (u32 j = 0U; j < this->channels.counter; j++) {
             if (this->channels.parent_ids[j] != this->channels.ids[i]) {
                 continue;
             }
-            std::cout << "  -> " << this->channels.names[j] << "\n";
+            std::cout << " -> " << this->channels.names[j] << "\n";
         }
     }
     std::cout << "\ndevice >> " << std::flush;
@@ -293,8 +293,10 @@ device_status device::_load_state(void) noexcept {
         i32 commit_id = 0;
 
         if (std::sscanf(line, "depot=%127[^,],%100[^,],%d", path, channel, &commit_id) == 3) {
-            std::strncpy(this->depots.paths[this->depots.counter], path, 127);
-            std::strncpy(this->depots.channels[this->depots.counter], channel, 101);
+            std::strncpy(this->depots.paths[this->depots.counter], path, sizeof(this->depots.paths[0]) - 1);
+            this->depots.paths[this->depots.counter][sizeof(this->depots.paths[0]) - 1] = '\0';
+            std::strncpy(this->depots.channels[this->depots.counter], channel, sizeof(this->depots.channels[0]) - 1);
+            this->depots.channels[this->depots.counter][sizeof(this->depots.channels[0]) - 1] = '\0';
             this->depots.commit_ids[this->depots.counter] = commit_id;
             this->depots.is_active[this->depots.counter] = 1;
             this->depots.counter++;
@@ -312,7 +314,7 @@ device_status device::_save_state(void) noexcept {
     }
 
     for (u32 i = 0; i < this->depots.counter; i++) {
-        std::fprintf(file, "depot=%s,%s,%d", 
+        std::fprintf(file, "depot=%s,%s,%d\n", 
             this->depots.paths[i], 
             this->depots.channels[i], 
             this->depots.commit_ids[i]
@@ -551,40 +553,71 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
         return device_status::READ_ERROR;
     }
 
-    char cmd_p4_changes_out[128] = {0};
-    if (std::fgets(cmd_p4_changes_out, sizeof(cmd_p4_changes_out), cmd_p4_changes_pipe) == nullptr) {
-#ifdef _WIN32
-        _pclose(cmd_p4_changes_pipe);
-#else
-        pclose(cmd_p4_changes_pipe);
-#endif
-        return device_status::READ_ERROR;
-    }
-
     i32 curr_commit_id = 0;
-    if (std::sscanf(cmd_p4_changes_out, "Change %d on", &curr_commit_id) != 1) {
-#ifdef _WIN32
-        _pclose(cmd_p4_changes_pipe);
-#else
-        pclose(cmd_p4_changes_pipe);
-#endif
-        return device_status::READ_ERROR;
+    u8 saw_error = 0U;
+    u8 saw_exit_ok = 0U;
+    char cmd_p4_changes_out[256] = {0};
+
+    while (std::fgets(cmd_p4_changes_out, sizeof(cmd_p4_changes_out), cmd_p4_changes_pipe) != nullptr) {
+        if (std::strncmp(cmd_p4_changes_out, "error:", 6) == 0) {
+            saw_error = 1U;
+        } else if (std::strncmp(cmd_p4_changes_out, "info: Change ", 13) == 0) {
+            (void) std::sscanf(cmd_p4_changes_out, "info: Change %d on", &curr_commit_id);
+        } else if (std::strncmp(cmd_p4_changes_out, "exit: ", 6) == 0) {
+            i32 p4_exit = -1;
+            if (std::sscanf(cmd_p4_changes_out, "exit: %d", &p4_exit) == 1 && p4_exit == 0) {
+                saw_exit_ok = 1U;
+            }
+        }
     }
 
-    if (curr_commit_id <= commit_id) {
 #ifdef _WIN32
-        _pclose(cmd_p4_changes_pipe);
+    _pclose(cmd_p4_changes_pipe);
 #else
-        pclose(cmd_p4_changes_pipe);
+    pclose(cmd_p4_changes_pipe);
 #endif
+
+    if (saw_error || !saw_exit_ok) {
+        return device_status::READ_ERROR;
+    }
+    if (curr_commit_id == 0 || curr_commit_id <= commit_id) {
         return device_status::SUCCESS;
     }
 
-#ifdef _WIN32
-        _pclose(cmd_p4_changes_pipe);
-#else
-        pclose(cmd_p4_changes_pipe);
-#endif
+//     char cmd_p4_changes_out[128] = {0};
+//     if (std::fgets(cmd_p4_changes_out, sizeof(cmd_p4_changes_out), cmd_p4_changes_pipe) == nullptr) {
+// #ifdef _WIN32
+//         _pclose(cmd_p4_changes_pipe);
+// #else
+//         pclose(cmd_p4_changes_pipe);
+// #endif
+//         return device_status::READ_ERROR;
+//     }
+
+//     i32 curr_commit_id = 0;
+//     if (std::sscanf(cmd_p4_changes_out, "Change %d on", &curr_commit_id) != 1) {
+// #ifdef _WIN32
+//         _pclose(cmd_p4_changes_pipe);
+// #else
+//         pclose(cmd_p4_changes_pipe);
+// #endif
+//         return device_status::READ_ERROR;
+//     }
+
+//     if (curr_commit_id <= commit_id) {
+// #ifdef _WIN32
+//         _pclose(cmd_p4_changes_pipe);
+// #else
+//         pclose(cmd_p4_changes_pipe);
+// #endif
+//         return device_status::SUCCESS;
+//     }
+
+// #ifdef _WIN32
+//         _pclose(cmd_p4_changes_pipe);
+// #else
+//         pclose(cmd_p4_changes_pipe);
+// #endif
 
     char cmd_p4_desc[128];
     std::snprintf(cmd_p4_desc, sizeof(cmd_p4_desc), "p4 -Ztag -F \"%%desc%%\" describe -s %d", curr_commit_id);
