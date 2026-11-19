@@ -51,9 +51,6 @@ private:
 
     struct {
         std::thread worker;
-        // char pending_cmd[64];
-        // std::atomic<u8> has_pending_cmd;
-
         lf_spsc_queue<command, 16> commands;
         std::mutex lock;
     } console;

@@ -6,10 +6,10 @@
 #include <thread>
 
 #ifdef _WIN32
-#include <conio.h>
+    #include <conio.h>
 #else
-#include <poll.h>
-#include <unistd.h>
+    #include <poll.h>
+    #include <unistd.h>
 #endif
 
 #include "device.h"
@@ -180,14 +180,15 @@ void device::_console_print(const char *message) noexcept {
 
 void device::_exec_print_status(const command &command) noexcept {
     std::lock_guard<std::mutex> lock(this->console.lock);
-    std::cout << "\r\033[2K--- SYS STATUS ---\n" << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << "\n"
+    std::cout << "\n\r\033[2K--- SYSTEM STATUS ---\n" << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << "\n"
         << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << "\n"
         << "Depots: " << this->depots.counter << " depots\n" << "\ndevice >> " << std::flush;
+    // show active/offline depots
 }
 
 void device::_exec_print_channels(const command &command) noexcept {
     std::lock_guard<std::mutex> lock(this->console.lock);
-    std::cout << "\r\033[2K--- MAPPED DC CHANNELS ---\n";
+    std::cout << "\n\r\033[2K--- MAPPED CHANNELS ---\n\n";
     for (u32 i = 0U; i < this->channels.counter; i++) {
         if (this->channels.parent_ids[i] != 0U) {
             continue;
