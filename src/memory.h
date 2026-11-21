@@ -17,7 +17,7 @@ struct allocator_result {
 
 template<typename T, u32 CAPACITY>
 class lf_pool_allocator final {
-    static_assert(CAPACITY >= 0U, "Pool capacity must be greater than zero.");
+    static_assert(CAPACITY > 0U, "Pool capacity must be greater than zero.");
     static_assert(std::is_nothrow_default_constructible_v<T>, "T must be nothrow default constructible.");
     static_assert(std::is_nothrow_destructible_v<T>, "T must be nothrow destructible.");
 public:
@@ -48,12 +48,23 @@ public:
             return allocator_status::INVALID_ARGUMENT;
         }
 
-        for (u32 i = 0U; i < CAPACITY; i++) {
-            u8 expected = 0U;
-            if (this->used[i].compare_exchange_strong(expected, 0U, std::memory_order_release, std::memory_order_relaxed)) {
-                return allocator_status::SUCCESS;
-            }
+        const uintptr_t ptraddr = reinterpret_cast<uintptr_t>(ptr);
+        const uintptr_t baseaddr = reinterpret_cast<uintptr_t>(this->pool);
+        const uintptr_t endaddr = baseaddr + (static_cast<uintptr_t>(CAPACITY) * sizeof(T));
+
+        if (ptraddr < baseaddr || ptraddr >= endaddr) {
             return allocator_status::INVALID_ARGUMENT;
+        }
+
+        const uintptr_t offset = ptraddr - baseaddr;
+        if ((offset % sizeof(T)) != 0U) {
+            return allocator_status::INVALID_ARGUMENT;
+        }
+
+        const u32 index = static_cast<u32>(offset / sizeof(T));
+        u8 expected = 1U;
+        if (this->used[index].compare_exchange_strong(expected, 0U, std::memory_order_release, std::memory_order_relaxed)) {
+            return allocator_status::SUCCESS;
         }
 
         return allocator_status::INVALID_ARGUMENT;
