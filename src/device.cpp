@@ -28,8 +28,9 @@ device_status device::initialize(void) noexcept {
     this->token[sizeof(this->token) - 1] = '\0';
 
     this->is_running.store(1U, std::memory_order_relaxed);
-    this->is_gw_online = 0;
-    this->is_mess_online = 0;
+    this->is_gw_online = 0U;
+    this->is_mess_online = 0U;
+    this->is_p4_authed = 0U;
 
     dispatcher_status disp_init_status = this->dispatcher.initialize();
     if (disp_init_status != dispatcher_status::SUCCESS) {
@@ -62,7 +63,7 @@ device_status device::initialize(void) noexcept {
 
     device_status dev_load_status = this->_load_state();
     if (dev_load_status != device_status::SUCCESS) {
-        this->last_p4_commit_id = 0;
+        // this->last_p4_commit_id = 0;
         // std::cout << "HOR_WARN: Could not access or create state file. Defaulting commit ID to 0." << std::endl;
         this->_console_print("HOR_WARN: Could not access or create state file. Defaulting commit ID to 0.");
     }
@@ -76,13 +77,16 @@ device_status device::initialize(void) noexcept {
     this->last_channels_sync = std::chrono::steady_clock::now();
 
     device_status dev_p4_login = this->_create_p4_ticket();
-    if (dev_p4_login != device_status::SUCCESS) {
+    if (dev_p4_login == device_status::SUCCESS) {
+        this->is_p4_authed = 1;
+    } else {
         // std::cout << "HOT_WARN: P4 auth failed." << std::endl;
         this->_console_print("HOT_WARN: P4 auth failed.");
     }
 
     this->last_p4_login = std::chrono::steady_clock::now();
     this->last_p4_commits_check = std::chrono::steady_clock::now();
+    this->last_depots_restore = std::chrono::steady_clock::now();
 
     this->console.worker = std::thread(&device::_console_tick, this);
 
@@ -172,6 +176,7 @@ const device::cmd_handler device::cmd_dispatch_table[static_cast<u8>(command_opc
     &device::_exec_print_status,
     &device::_exec_print_channels,
     nullptr,
+    &device::_exec_restore_depots,
     &device::_exec_exit
 };
 
@@ -212,6 +217,33 @@ void device::_exec_print_channels(const command &command) noexcept {
         }
     }
     std::cout << "\ndevice >> " << std::flush;
+}
+
+void device::_exec_restore_depots(const command &command) noexcept {
+    (void) command;
+    u32 inactive_depots = 0U;
+    for (u32 i = 0U; i < this->depots.counter; i++) {
+        if (this->depots.is_active[i] == 0U) {
+            inactive_depots++;
+        }
+    }
+
+    if (inactive_depots == 0U) {
+        return;
+    }
+
+    if (this->_create_p4_ticket() != device_status::SUCCESS) {
+        this->is_p4_authed = 0U;
+        return;
+    }
+
+    this->is_p4_authed = 1U;
+    this->last_p4_login = std::chrono::steady_clock::now();
+
+    u32 restored_depots = 0U;
+    for (u32 i = 0U; i < this->depots.counter; i++) {
+        //..
+    }
 }
 
 void device::_exec_exit(const command &command) noexcept {
@@ -268,6 +300,8 @@ void device::_console_tick(void) noexcept {
                         command.opcode = command_opcode::PRINT_STATUS;
                     } else if (std::strcmp(input, "channels") == 0) {
                         command.opcode = command_opcode::PRINT_CHANNELS;
+                    } else if (std::strcmp(input, "restore") == 0) {
+                        command.opcode = command_opcode::RESTORE_DEPOTS;
                     } else if (std::strcmp(input, "exit") == 0) {
                         command.opcode = command_opcode::SHUTDOWN;
                     }
