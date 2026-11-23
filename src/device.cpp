@@ -161,6 +161,12 @@ void device::tick(void) noexcept {
             this->last_p4_commits_check = clock_now;
         }
 
+        auto p4_depots_restore_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_depots_restore).count();
+        if (p4_depots_restore_elapsed >= 480) {
+            (void) this->_restore_p4_depots();
+            this->last_depots_restore = clock_now;
+        }
+
         // handle responses from the server (eg /status)
         this->_process_console_cmds();
         if (this->is_running.load(std::memory_order_acquire) == 0U) {
@@ -230,44 +236,7 @@ void device::_exec_print_channels(const command &command) noexcept {
 
 void device::_exec_restore_depots(const command &command) noexcept {
     (void) command;
-    u32 inactive_depots = 0U;
-    for (u32 i = 0U; i < this->depots.counter; i++) {
-        if (this->depots.is_active[i] == 0U) {
-            inactive_depots++;
-        }
-    }
-
-    if (inactive_depots == 0U) {
-        return;
-    }
-
-    if (this->_create_p4_ticket() != device_status::SUCCESS) {
-        this->is_p4_authed = 0U;
-        return;
-    }
-
-    this->is_p4_authed = 1U;
-    this->last_p4_login = std::chrono::steady_clock::now();
-
-    u32 restored_depots = 0U;
-    for (u32 i = 0U; i < this->depots.counter; i++) {
-        if (this->depots.is_active[i] != 0U) {
-            continue;
-        }
-
-        if (this->_check_p4_commits(i) == device_status::SUCCESS) {
-            this->depots.is_active[i] = 1U;
-            restored_depots++;
-            char message[256];
-            std::snprintf(message, sizeof(message), "HOR: Depot %s restored.", this->depots.paths[i]);
-            this->_console_print(message);
-        }
-    }
-
-    if (restored_depots == 0U) {
-        this->_console_print("HOR: No inactive depots have been restored.");
-    }
-
+    (void) this->_restore_p4_depots();
     this->last_depots_restore = std::chrono::steady_clock::now();
 }
 
@@ -730,6 +699,48 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
 
     this->depots.commit_ids[depot_id] = curr_commit_id;
     (void) this->_save_state();
+
+    return device_status::SUCCESS;
+}
+
+device_status device::_restore_p4_depots(void) noexcept {
+    u32 inactive_depots = 0U;
+    for (u32 i = 0U; i < this->depots.counter; i++) {
+        if (this->depots.is_active[i] == 0U) {
+            inactive_depots++;
+        }
+    }
+
+    if (inactive_depots == 0U) {
+        return device_status::SUCCESS;
+    }
+
+    if (this->_create_p4_ticket() != device_status::SUCCESS) {
+        this->is_p4_authed = 0U;
+        return device_status::NETWORK_ERROR;
+    }
+
+    this->is_p4_authed = 1U;
+    this->last_p4_login = std::chrono::steady_clock::now();
+
+    u32 restored_depots = 0U;
+    for (u32 i = 0U; i < this->depots.counter; i++) {
+        if (this->depots.is_active[i] != 0U) {
+            continue;
+        }
+
+        if (this->_check_p4_commits(i) == device_status::SUCCESS) {
+            this->depots.is_active[i] = 1U;
+            restored_depots++;
+            char message[256];
+            std::snprintf(message, sizeof(message), "HOR: Depot %s restored.", this->depots.paths[i]);
+            this->_console_print(message);
+        }
+    }
+
+    if (restored_depots == 0U) {
+        this->_console_print("HOR: No inactive depots have been restored.");
+    }
 
     return device_status::SUCCESS;
 }

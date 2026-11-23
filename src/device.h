@@ -114,6 +114,7 @@ private:
 
     [[nodiscard]] device_status _create_p4_ticket(void) noexcept;
     [[nodiscard]] device_status _check_p4_commits(const u32 depot_id) noexcept;
+    [[nodiscard]] device_status _restore_p4_depots(void) noexcept;
 };
 
 #endif // !HOR_DEVICE_H
