@@ -125,14 +125,23 @@ void device::tick(void) noexcept {
             this->last_channels_sync = clock_now;
         }
 
-        auto p4_login_elapsed = std::chrono::duration_cast<std::chrono::hours>(clock_now - this->last_p4_login).count();
-        if (p4_login_elapsed >= 11) {
-            device_status dev_p4_login_status = this->_create_p4_ticket();
-            if (dev_p4_login_status != device_status::SUCCESS) {
-                // std::cout << "HOR_WARN: P4 auth failed." << std::endl;
-                this->_console_print("HOR_WARN: P4 auth failed.");
+        auto p4_login_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_p4_login).count();
+        if (this->is_p4_authed) {
+            if (p4_login_elapsed >= 21600) {
+                device_status dev_p4_login_status = this->_create_p4_ticket();
+                if (dev_p4_login_status != device_status::SUCCESS) {
+                    this->is_p4_authed = 0U;
+                    this->_console_print("HOR_WARN: P4 auth failed.");
+                }
+                this->last_p4_login = clock_now;
             }
-            this->last_p4_login = clock_now;
+        } else {
+            if (p4_login_elapsed >= 120) {
+                if (this->_create_p4_ticket() == device_status::SUCCESS) {
+                    this->is_p4_authed = 1U;
+                }
+                this->last_p4_login = clock_now;
+            }
         }
 
         auto p4_commit_check_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_p4_commits_check).count();
