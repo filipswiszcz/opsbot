@@ -242,8 +242,24 @@ void device::_exec_restore_depots(const command &command) noexcept {
 
     u32 restored_depots = 0U;
     for (u32 i = 0U; i < this->depots.counter; i++) {
-        //..
+        if (this->depots.is_active[i] != 0U) {
+            continue;
+        }
+
+        if (this->_check_p4_commits(i) == device_status::SUCCESS) {
+            this->depots.is_active[i] = 1U;
+            restored_depots++;
+            char message[256];
+            std::snprintf(message, sizeof(message), "HOR: Depot %s restored.", this->depots.paths[i]);
+            this->_console_print(message);
+        }
     }
+
+    if (restored_depots == 0U) {
+        this->_console_print("HOR: No inactive depots have been restored.");
+    }
+
+    this->last_depots_restore = std::chrono::steady_clock::now();
 }
 
 void device::_exec_exit(const command &command) noexcept {
