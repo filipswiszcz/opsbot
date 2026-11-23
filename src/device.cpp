@@ -27,9 +27,10 @@ device_status device::initialize(void) noexcept {
     std::strncpy(this->token, token, sizeof(this->token) - 1);
     this->token[sizeof(this->token) - 1] = '\0';
 
-    this->is_running = 1;
-    this->is_gw_online = 0;
-    this->is_mess_online = 0;
+    this->is_running.store(1U, std::memory_order_relaxed);
+    this->is_gw_online = 0U;
+    this->is_mess_online = 0U;
+    this->is_p4_authed = 0U;
 
     dispatcher_status disp_init_status = this->dispatcher.initialize();
     if (disp_init_status != dispatcher_status::SUCCESS) {
@@ -62,7 +63,7 @@ device_status device::initialize(void) noexcept {
 
     device_status dev_load_status = this->_load_state();
     if (dev_load_status != device_status::SUCCESS) {
-        this->last_p4_commit_id = 0;
+        // this->last_p4_commit_id = 0;
         // std::cout << "HOR_WARN: Could not access or create state file. Defaulting commit ID to 0." << std::endl;
         this->_console_print("HOR_WARN: Could not access or create state file. Defaulting commit ID to 0.");
     }
@@ -76,13 +77,16 @@ device_status device::initialize(void) noexcept {
     this->last_channels_sync = std::chrono::steady_clock::now();
 
     device_status dev_p4_login = this->_create_p4_ticket();
-    if (dev_p4_login != device_status::SUCCESS) {
+    if (dev_p4_login == device_status::SUCCESS) {
+        this->is_p4_authed = 1;
+    } else {
         // std::cout << "HOT_WARN: P4 auth failed." << std::endl;
         this->_console_print("HOT_WARN: P4 auth failed.");
     }
 
     this->last_p4_login = std::chrono::steady_clock::now();
     this->last_p4_commits_check = std::chrono::steady_clock::now();
+    this->last_depots_restore = std::chrono::steady_clock::now();
 
     this->console.worker = std::thread(&device::_console_tick, this);
 
@@ -90,7 +94,7 @@ device_status device::initialize(void) noexcept {
 }
 
 void device::tick(void) noexcept {
-    while (this->is_running) {
+    while (this->is_running.load(std::memory_order_acquire) != 0U) {
         auto clock_now = std::chrono::steady_clock::now();
 
         auto gw_ping_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_gateway_ping).count();
@@ -121,14 +125,23 @@ void device::tick(void) noexcept {
             this->last_channels_sync = clock_now;
         }
 
-        auto p4_login_elapsed = std::chrono::duration_cast<std::chrono::hours>(clock_now - this->last_p4_login).count();
-        if (p4_login_elapsed >= 11) {
-            device_status dev_p4_login_status = this->_create_p4_ticket();
-            if (dev_p4_login_status != device_status::SUCCESS) {
-                // std::cout << "HOR_WARN: P4 auth failed." << std::endl;
-                this->_console_print("HOR_WARN: P4 auth failed.");
+        auto p4_login_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_p4_login).count();
+        if (this->is_p4_authed) {
+            if (p4_login_elapsed >= 21600) {
+                device_status dev_p4_login_status = this->_create_p4_ticket();
+                if (dev_p4_login_status != device_status::SUCCESS) {
+                    this->is_p4_authed = 0U;
+                    this->_console_print("HOR_WARN: P4 auth failed.");
+                }
+                this->last_p4_login = clock_now;
             }
-            this->last_p4_login = clock_now;
+        } else {
+            if (p4_login_elapsed >= 120) {
+                if (this->_create_p4_ticket() == device_status::SUCCESS) {
+                    this->is_p4_authed = 1U;
+                }
+                this->last_p4_login = clock_now;
+            }
         }
 
         auto p4_commit_check_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_p4_commits_check).count();
@@ -148,17 +161,26 @@ void device::tick(void) noexcept {
             this->last_p4_commits_check = clock_now;
         }
 
+        auto p4_depots_restore_elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock_now - this->last_depots_restore).count();
+        if (p4_depots_restore_elapsed >= 480) {
+            (void) this->_restore_p4_depots();
+            this->last_depots_restore = clock_now;
+        }
+
         // handle responses from the server (eg /status)
         this->_process_console_cmds();
+        if (this->is_running.load(std::memory_order_acquire) == 0U) {
+            break;
+        }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 }
 
 void device::terminate(void) noexcept {
-    this->is_running = 0;
+    this->is_running.store(0U, std::memory_order_release);
     if (this->console.worker.joinable()) {
-        this->console.worker.detach();
+        this->console.worker.join();
     }
     this->gateway.terminate();
     this->dispatcher.terminate();
@@ -167,7 +189,10 @@ void device::terminate(void) noexcept {
 const device::cmd_handler device::cmd_dispatch_table[static_cast<u8>(command_opcode::MAX_OPCODES)] {
     nullptr,
     &device::_exec_print_status,
-    &device::_exec_print_channels
+    &device::_exec_print_channels,
+    nullptr,
+    &device::_exec_restore_depots,
+    &device::_exec_exit
 };
 
 void device::_console_print(const char *message) noexcept {
@@ -179,29 +204,47 @@ void device::_console_print(const char *message) noexcept {
 }
 
 void device::_exec_print_status(const command &command) noexcept {
+    u32 active_depots = 0;
+    for (u32 i = 0U; i < this->depots.counter; i++) {
+        if (this->depots.is_active[i] != 0U) {
+            active_depots++;
+        }
+    }
     std::lock_guard<std::mutex> lock(this->console.lock);
-    std::cout << "\n\r\033[2K--- SYSTEM STATUS ---\n" << "Gateway: " << (this->is_gw_online ? "ONLINE" : "OFFLINE") << "\n"
-        << "Messenger: " << (this->is_mess_online ? "ONLINE" : "OFFLINE") << "\n"
-        << "Depots: " << this->depots.counter << " depots\n" << "\ndevice >> " << std::flush;
-    // show active/offline depots
+    std::cout << "\n\r\033[2KSYSTEM:\n" << "Gateway: " << (this->is_gw_online ? "online" : "offline") << "\n"
+        << "Messenger: " << (this->is_mess_online ? "online" : "offline") << "\n"
+        << "Depots: " << this->depots.counter << " (" << active_depots << " active)" << "\n\ndevice >> " << std::flush;
 }
 
 void device::_exec_print_channels(const command &command) noexcept {
     std::lock_guard<std::mutex> lock(this->console.lock);
-    std::cout << "\n\r\033[2K--- MAPPED CHANNELS ---\n\n";
+    std::cout << "\n\r\033[2KMAPPED CHANNELS:\n";
     for (u32 i = 0U; i < this->channels.counter; i++) {
         if (this->channels.parent_ids[i] != 0U) {
             continue;
         }
-        std::cout << "[category] " << this->channels.names[i] << "\n";
+        std::cout << this->channels.names[i] << "\n";
         for (u32 j = 0U; j < this->channels.counter; j++) {
             if (this->channels.parent_ids[j] != this->channels.ids[i]) {
                 continue;
             }
-            std::cout << "  -> " << this->channels.names[j] << "\n";
+            std::cout << " -> " << this->channels.names[j] << "\n";
         }
     }
     std::cout << "\ndevice >> " << std::flush;
+}
+
+void device::_exec_restore_depots(const command &command) noexcept {
+    (void) command;
+    (void) this->_restore_p4_depots();
+    this->last_depots_restore = std::chrono::steady_clock::now();
+}
+
+void device::_exec_exit(const command &command) noexcept {
+    (void) command;
+    std::lock_guard<std::mutex> lock(this->console.lock);
+    std::cout << "\r\033[2KHalting..\n" << std::flush;
+    this->is_running.store(0U, std::memory_order_release);
 }
 
 void device::_process_console_cmds(void) noexcept {
@@ -219,8 +262,8 @@ void device::_process_console_cmds(void) noexcept {
 
 void device::_console_tick(void) noexcept {
     char input[256];
-    std::cout << "device >> " << std::flush;
-    while (this->is_running) {
+    // std::cout << "device >> " << std::flush;
+    while (this->is_running.load(std::memory_order_acquire) != 0U) {
         u8 has_input = 0U;
 
 #ifdef _WIN32
@@ -251,6 +294,10 @@ void device::_console_tick(void) noexcept {
                         command.opcode = command_opcode::PRINT_STATUS;
                     } else if (std::strcmp(input, "channels") == 0) {
                         command.opcode = command_opcode::PRINT_CHANNELS;
+                    } else if (std::strcmp(input, "restore") == 0) {
+                        command.opcode = command_opcode::RESTORE_DEPOTS;
+                    } else if (std::strcmp(input, "exit") == 0) {
+                        command.opcode = command_opcode::SHUTDOWN;
                     }
 
                     if (command.opcode != command_opcode::NONE) {
@@ -291,11 +338,15 @@ device_status device::_load_state(void) noexcept {
         char path[128] = {0};
         char channel[101] = {0};
         i32 commit_id = 0;
+        i32 changelog_id = 0;
 
-        if (std::sscanf(line, "depot=%127[^,],%100[^,],%d", path, channel, &commit_id) == 3) {
-            std::strncpy(this->depots.paths[this->depots.counter], path, 127);
-            std::strncpy(this->depots.channels[this->depots.counter], channel, 101);
+        if (std::sscanf(line, "depot=%127[^,],%100[^,],%d,%d", path, channel, &commit_id, &changelog_id) == 4) {
+            std::strncpy(this->depots.paths[this->depots.counter], path, sizeof(this->depots.paths[0]) - 1);
+            this->depots.paths[this->depots.counter][sizeof(this->depots.paths[0]) - 1] = '\0';
+            std::strncpy(this->depots.channels[this->depots.counter], channel, sizeof(this->depots.channels[0]) - 1);
+            this->depots.channels[this->depots.counter][sizeof(this->depots.channels[0]) - 1] = '\0';
             this->depots.commit_ids[this->depots.counter] = commit_id;
+            this->depots.changelog_ids[this->depots.counter] = changelog_id;
             this->depots.is_active[this->depots.counter] = 1;
             this->depots.counter++;
         }
@@ -312,10 +363,11 @@ device_status device::_save_state(void) noexcept {
     }
 
     for (u32 i = 0; i < this->depots.counter; i++) {
-        std::fprintf(file, "depot=%s,%s,%d", 
+        std::fprintf(file, "depot=%s,%s,%d,%d\n", 
             this->depots.paths[i], 
             this->depots.channels[i], 
-            this->depots.commit_ids[i]
+            this->depots.commit_ids[i],
+            this->depots.changelog_ids[i]
         );
     }
 
@@ -499,9 +551,9 @@ device_status device::_create_p4_ticket(void) noexcept {
 
     FILE *pipe;
 #ifdef _WIN32
-    pipe = _popen("p4 login", "w");
+    pipe = _popen("p4 login > NUL 2>&1", "w");
 #else
-    pipe = popen("p4 login", "w");
+    pipe = popen("p4 login > /dev/null 2>&1", "w");
 #endif
 
     if (pipe == nullptr) {
@@ -539,7 +591,7 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
     const i32 commit_id = this->depots.commit_ids[depot_id];
 
     char cmd_p4_changes[256]; // find the best size
-    std::snprintf(cmd_p4_changes, sizeof(cmd_p4_changes), "p4 changes -m 1 -s submitted %s", depot_name);
+    std::snprintf(cmd_p4_changes, sizeof(cmd_p4_changes), "p4 -s changes -m 1 -s submitted %s", depot_name);
 
     FILE *cmd_p4_changes_pipe;
 #ifdef _WIN32
@@ -551,40 +603,42 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
         return device_status::READ_ERROR;
     }
 
-    char cmd_p4_changes_out[128] = {0};
-    if (std::fgets(cmd_p4_changes_out, sizeof(cmd_p4_changes_out), cmd_p4_changes_pipe) == nullptr) {
-#ifdef _WIN32
-        _pclose(cmd_p4_changes_pipe);
-#else
-        pclose(cmd_p4_changes_pipe);
-#endif
-        return device_status::READ_ERROR;
-    }
-
     i32 curr_commit_id = 0;
-    if (std::sscanf(cmd_p4_changes_out, "Change %d on", &curr_commit_id) != 1) {
-#ifdef _WIN32
-        _pclose(cmd_p4_changes_pipe);
-#else
-        pclose(cmd_p4_changes_pipe);
-#endif
-        return device_status::READ_ERROR;
+    u8 saw_error = 0U;
+    u8 saw_exit_ok = 0U;
+    char cmd_p4_changes_out[256] = {0};
+
+    while (std::fgets(cmd_p4_changes_out, sizeof(cmd_p4_changes_out), cmd_p4_changes_pipe) != nullptr) {
+        if (std::strncmp(cmd_p4_changes_out, "error:", 6) == 0) {
+            saw_error = 1U;
+        } else if (std::strncmp(cmd_p4_changes_out, "info: Change ", 13) == 0) {
+            (void) std::sscanf(cmd_p4_changes_out, "info: Change %d on", &curr_commit_id);
+        } else if (std::strncmp(cmd_p4_changes_out, "exit: ", 6) == 0) {
+            i32 p4_exit = -1;
+            if (std::sscanf(cmd_p4_changes_out, "exit: %d", &p4_exit) == 1 && p4_exit == 0) {
+                saw_exit_ok = 1U;
+            }
+        }
     }
 
-    if (curr_commit_id <= commit_id) {
 #ifdef _WIN32
-        _pclose(cmd_p4_changes_pipe);
+    _pclose(cmd_p4_changes_pipe);
 #else
-        pclose(cmd_p4_changes_pipe);
+    pclose(cmd_p4_changes_pipe);
 #endif
+
+    if (saw_error || !saw_exit_ok) {
+        return device_status::READ_ERROR;
+    }
+    if (curr_commit_id == 0 || curr_commit_id <= commit_id) {
         return device_status::SUCCESS;
     }
 
-#ifdef _WIN32
-        _pclose(cmd_p4_changes_pipe);
-#else
-        pclose(cmd_p4_changes_pipe);
-#endif
+    if (commit_id < 0) {
+        this->depots.commit_ids[depot_id] = curr_commit_id;
+        (void) this->_save_state();
+        return device_status::SUCCESS;
+    }
 
     char cmd_p4_desc[128];
     std::snprintf(cmd_p4_desc, sizeof(cmd_p4_desc), "p4 -Ztag -F \"%%desc%%\" describe -s %d", curr_commit_id);
@@ -630,18 +684,63 @@ device_status device::_check_p4_commits(const u32 depot_id) noexcept {
         pclose(cmd_p4_desc_pipe);
 #endif
 
-    char message[1536];
-    std::snprintf(message, sizeof(message), "CHANGELOG #%d\\n%s", curr_commit_id, content);
+    const i32 next_changelog_id = this->depots.changelog_ids[depot_id] + 1;
 
-    if (commit_id != 0) {
-        u64 channel_id = this->_get_channel_id(channel_name);
-        if (channel_id != 0) {
-            this->messenger.send(channel_id, message);
+    char message[1536];
+    std::snprintf(message, sizeof(message), "CHANGELOG #%d\\n%s", next_changelog_id, content);
+
+    u64 channel_id = this->_get_channel_id(channel_name);
+    if (channel_id != 0) {
+        messenger_status msg_send_status = this->messenger.send(channel_id, message);
+        if (msg_send_status == messenger_status::SUCCESS) {
+            this->depots.changelog_ids[depot_id] = next_changelog_id;
         }
     }
 
     this->depots.commit_ids[depot_id] = curr_commit_id;
-    this->_save_state();
+    (void) this->_save_state();
+
+    return device_status::SUCCESS;
+}
+
+device_status device::_restore_p4_depots(void) noexcept {
+    u32 inactive_depots = 0U;
+    for (u32 i = 0U; i < this->depots.counter; i++) {
+        if (this->depots.is_active[i] == 0U) {
+            inactive_depots++;
+        }
+    }
+
+    if (inactive_depots == 0U) {
+        return device_status::SUCCESS;
+    }
+
+    if (this->_create_p4_ticket() != device_status::SUCCESS) {
+        this->is_p4_authed = 0U;
+        return device_status::NETWORK_ERROR;
+    }
+
+    this->is_p4_authed = 1U;
+    this->last_p4_login = std::chrono::steady_clock::now();
+
+    u32 restored_depots = 0U;
+    for (u32 i = 0U; i < this->depots.counter; i++) {
+        if (this->depots.is_active[i] != 0U) {
+            continue;
+        }
+
+        if (this->_check_p4_commits(i) == device_status::SUCCESS) {
+            this->depots.is_active[i] = 1U;
+            restored_depots++;
+            char message[256];
+            std::snprintf(message, sizeof(message), "HOR: Depot %s restored.", this->depots.paths[i]);
+            this->_console_print(message);
+        }
+    }
+
+    if (restored_depots == 0U) {
+        this->_console_print("HOR: No inactive depots have been restored.");
+    }
 
     return device_status::SUCCESS;
 }

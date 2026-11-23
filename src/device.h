@@ -25,6 +25,7 @@ enum class command_opcode : u8 {
     PRINT_STATUS,
     PRINT_CHANNELS,
     RELOAD_CONFIG,
+    RESTORE_DEPOTS,
     SHUTDOWN,
     MAX_OPCODES
 };
@@ -66,23 +67,26 @@ private:
         char paths[PERFORCE_MAX_DEPOTS][128];
         char channels[PERFORCE_MAX_DEPOTS][101];
         i32 commit_ids[PERFORCE_MAX_DEPOTS];
+        i32 changelog_ids[PERFORCE_MAX_DEPOTS];
         u8 is_active[PERFORCE_MAX_DEPOTS];
         u32 counter;
     } depots;
 
     char token[128];
 
-    u8 is_running;
+    std::atomic<u8> is_running{0U};
 
     u8 is_gw_online;
     u8 is_mess_online;
+    u8 is_p4_authed;
 
     std::chrono::steady_clock::time_point last_gateway_ping;
     std::chrono::steady_clock::time_point last_channels_sync;
 
     std::chrono::steady_clock::time_point last_p4_login;
     std::chrono::steady_clock::time_point last_p4_commits_check;
-    i32 last_p4_commit_id;
+    std::chrono::steady_clock::time_point last_depots_restore;
+    // i32 last_p4_commit_id;
 
     typedef void (device::*cmd_handler) (const command&) noexcept;
 
@@ -92,6 +96,8 @@ private:
 
     void _exec_print_status(const command &command) noexcept;
     void _exec_print_channels(const command &command) noexcept;
+    void _exec_restore_depots(const command &command) noexcept;
+    void _exec_exit(const command &command) noexcept;
 
     void _process_console_cmds(void) noexcept;
 
@@ -108,6 +114,7 @@ private:
 
     [[nodiscard]] device_status _create_p4_ticket(void) noexcept;
     [[nodiscard]] device_status _check_p4_commits(const u32 depot_id) noexcept;
+    [[nodiscard]] device_status _restore_p4_depots(void) noexcept;
 };
 
 #endif // !HOR_DEVICE_H
