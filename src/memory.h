@@ -60,6 +60,17 @@ public:
     //     allocator_result<T> result = 
     // }
 
+    [[nodiscard]] u32 save(void) const noexcept {
+        return this->head;
+    }
+
+    void restore(const u32 marker) noexcept {
+        if (marker > this->head) {
+            return;
+        }
+        this->head = marker;
+    }
+
     void reset(void) noexcept {
         this->head = 0U;
     }
