@@ -81,7 +81,7 @@ private:
 
 template<typename T, u32 CAPACITY>
 class lf_pool_allocator final {
-    static_assert(CAPACITY >= 0U, "Pool capacity must be greater than zero.");
+    static_assert(CAPACITY > 0U, "Pool capacity must be greater than zero.");
     static_assert(std::is_nothrow_default_constructible_v<T>, "T must be nothrow default constructible.");
     static_assert(std::is_nothrow_destructible_v<T>, "T must be nothrow destructible.");
 public:
@@ -107,17 +107,27 @@ public:
         return {allocator_status::OUT_OF_MEMORY, nullptr};
     }
 
-    [[nodiscard]] allocator_status free(const T *ptr) noexcept {
-        if (ptr == nullptr) {
+    [[nodiscard]] allocator_status free(const T *item) noexcept {
+        if (item == nullptr) {
             return allocator_status::INVALID_ARGUMENT;
         }
 
-        for (u32 i = 0U; i < CAPACITY; i++) {
-            u8 expected = 0U;
-            if (this->used[i].compare_exchange_strong(expected, 0U, std::memory_order_release, std::memory_order_relaxed)) {
-                return allocator_status::SUCCESS;
-            }
+        const std::uintptr_t head = reinterpret_cast<std::uintptr_t>(this->pool);
+        const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(item);
+        const std::uintptr_t tail = head + (static_cast<std::uintptr_t>(CAPACITY) * sizeof(T));
+
+        if (addr < head || addr >= tail || ((addr - head) % sizeof(T)) != 0U) {
             return allocator_status::INVALID_ARGUMENT;
+        }
+
+        const u32 index = static_cast<u32>((addr - head) / sizeof(T));
+        if (index >= CAPACITY) {
+            return allocator_status::INVALID_ARGUMENT;
+        }
+
+        u8 expected_state = 1U;
+        if (this->used[index].compare_exchange_strong(expected_state, 0U, std::memory_order_release, std::memory_order_relaxed)) {
+            return allocator_status::SUCCESS;
         }
 
         return allocator_status::INVALID_ARGUMENT;
