@@ -15,6 +15,75 @@ struct allocator_result {
     T *ptr;
 };
 
+template<u32 CAPACITY>
+class linear_allocator final {
+    static_assert(CAPACITY >= 0U, "Allocator capacity must be greater than zero.");
+public:
+    linear_allocator() noexcept = default;
+    linear_allocator(const linear_allocator&) = delete;
+    linear_allocator &operator=(const linear_allocator&) = delete;
+    linear_allocator(linear_allocator&&) = delete;
+    linear_allocator &operator=(linear_allocator&&) = delete;
+
+    [[nodiscard]] allocator_result<void> allocate_region(const u32 size, const u32 alignment = alignof(std::max_align_t)) noexcept {
+        if (size == 0U || alignment == 0U || alignment > 64U || (alignment & (alignment - 1U)) != 0U) {
+            return {allocator_status::INVALID_ARGUMENT, nullptr};
+        }
+
+        const u32 remainder = (this->head & (alignment - 1U));
+        const u32 padding = ((remainder == 0U) ? 0U : (alignment - remainder));
+
+        if (padding > (CAPACITY - this->head)) {
+            return {allocator_status::OUT_OF_MEMORY, nullptr};
+        }
+
+        const u32 offset = this->head + padding;
+        if (size > (CAPACITY - offset)) {
+            return {allocator_status::OUT_OF_MEMORY, nullptr};
+        }
+
+        void *addr = &this->data[offset];
+        this->head = offset + size;
+
+        return {allocator_status::SUCCESS, addr};
+    }
+
+    template<typename T>
+    [[nodiscard]] allocator_result<T> allocate(const u32 count = 1U) noexcept {
+        static_assert(std::is_trivially_destructible_v<T>, "Linear allocator only supports trivially destructible types.");
+        static_assert(alignof(T) <= 64U, "Alignment exceeds allocator data alignment.");
+
+        if (count == 0 || count > (CAPACITY / sizeof(T))) {
+            return {allocator_status::INVALID_ARGUMENT, nullptr};
+        }
+
+        allocator_result<T> result = this->allocate_region((static_cast<u32>(sizeof(T)) * count), static_cast<u32>(alignof(T)));
+        if (result.status != allocator_status::SUCCESS) {
+            return {result.status, nullptr};
+        }
+
+        return {allocator_status::SUCCESS, static_cast<T*>(result.ptr)};
+    }
+
+    [[nodiscard]] u32 save(void) const noexcept {
+        return this->head;
+    }
+
+    void restore(const u32 marker) noexcept {
+        if (marker > this->head) {
+            return;
+        }
+        this->head = marker;
+    }
+
+    void reset(void) noexcept {
+        this->head = 0U;
+    }
+private:
+    alignas(64) u8 data[CAPACITY];
+    u32 head{0};
+};
+
 template<typename T, u32 CAPACITY>
 class lf_pool_allocator final {
     static_assert(CAPACITY > 0U, "Pool capacity must be greater than zero.");
@@ -43,27 +112,26 @@ public:
         return {allocator_status::OUT_OF_MEMORY, nullptr};
     }
 
-    [[nodiscard]] allocator_status free(const T *ptr) noexcept {
-        if (ptr == nullptr) {
+    [[nodiscard]] allocator_status free(const T *item) noexcept {
+        if (item == nullptr) {
             return allocator_status::INVALID_ARGUMENT;
         }
 
-        const uintptr_t ptraddr = reinterpret_cast<uintptr_t>(ptr);
-        const uintptr_t baseaddr = reinterpret_cast<uintptr_t>(this->pool);
-        const uintptr_t endaddr = baseaddr + (static_cast<uintptr_t>(CAPACITY) * sizeof(T));
+        const std::uintptr_t head = reinterpret_cast<std::uintptr_t>(this->pool);
+        const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(item);
+        const std::uintptr_t tail = head + (static_cast<std::uintptr_t>(CAPACITY) * sizeof(T));
 
-        if (ptraddr < baseaddr || ptraddr >= endaddr) {
+        if (addr < head || addr >= tail || ((addr - head) % sizeof(T)) != 0U) {
             return allocator_status::INVALID_ARGUMENT;
         }
 
-        const uintptr_t offset = ptraddr - baseaddr;
-        if ((offset % sizeof(T)) != 0U) {
+        const u32 index = static_cast<u32>((addr - head) / sizeof(T));
+        if (index >= CAPACITY) {
             return allocator_status::INVALID_ARGUMENT;
         }
 
-        const u32 index = static_cast<u32>(offset / sizeof(T));
-        u8 expected = 1U;
-        if (this->used[index].compare_exchange_strong(expected, 0U, std::memory_order_release, std::memory_order_relaxed)) {
+        u8 expected_state = 1U;
+        if (this->used[index].compare_exchange_strong(expected_state, 0U, std::memory_order_release, std::memory_order_relaxed)) {
             return allocator_status::SUCCESS;
         }
 
