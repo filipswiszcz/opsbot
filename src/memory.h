@@ -25,7 +25,7 @@ public:
     linear_allocator(linear_allocator&&) = delete;
     linear_allocator &operator=(linear_allocator&&) = delete;
 
-    [[nodiscard]] allocator_result<void> allocate(const u32 size, const u32 alignment = alignof(std::max_align_t)) noexcept {
+    [[nodiscard]] allocator_result<void> allocate_region(const u32 size, const u32 alignment = alignof(std::max_align_t)) noexcept {
         if (size == 0U || alignment == 0U || alignment > 64U || (alignment & (alignment - 1U)) != 0U) {
             return {allocator_status::INVALID_ARGUMENT, nullptr};
         }
@@ -48,17 +48,22 @@ public:
         return {allocator_status::SUCCESS, addr};
     }
 
-    // template<typename T>
-    // [[nodiscard]] allocator_result<T> allocate(const u32 count = 1U) noexcept {
-    //     static_assert(std::is_trivially_destructible_v<T>, "Linear allocator only supports trivially destructible types.");
-    //     static_assert(alignof(T) <= 64U, "Alignment exceeds arena data alignment.");
+    template<typename T>
+    [[nodiscard]] allocator_result<T> allocate(const u32 count = 1U) noexcept {
+        static_assert(std::is_trivially_destructible_v<T>, "Linear allocator only supports trivially destructible types.");
+        static_assert(alignof(T) <= 64U, "Alignment exceeds allocator data alignment.");
 
-    //     if (count == 0 || count > (CAPACITY / sizeof(T))) {
-    //         return {allocator_status::INVALID_ARGUMENT, nullptr};
-    //     }
+        if (count == 0 || count > (CAPACITY / sizeof(T))) {
+            return {allocator_status::INVALID_ARGUMENT, nullptr};
+        }
 
-    //     allocator_result<T> result = 
-    // }
+        allocator_result<T> result = this->allocate_region((static_cast<u32>(sizeof(T)) * count), static_cast<u32>(alignof(T)));
+        if (result.status != allocator_status::SUCCESS) {
+            return {result.status, nullptr};
+        }
+
+        return {allocator_status::SUCCESS, static_cast<T*>(result.ptr)};
+    }
 
     [[nodiscard]] u32 save(void) const noexcept {
         return this->head;
